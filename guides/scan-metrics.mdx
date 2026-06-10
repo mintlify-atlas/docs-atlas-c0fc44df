@@ -1,0 +1,188 @@
+---
+title: "Track and Analyze Exhibit Scan Metrics in BioScan Museo"
+sidebarTitle: "Scan Metrics"
+description: "BioScan Museo records every QR scan event with origin, timestamp, and user context. Explore the metrics dashboard for daily trends and per-species rankings."
+---
+
+BioScan Museo records a `ScanEvent` every time a visitor interacts with a species — whether by scanning a physical QR code, visiting the exhibit URL directly in a browser, or opening the exhibit from the admin panel. These events are the source of truth for all metrics. The admin dashboard at `/admin/metricas` visualizes scan volume over time, origin breakdowns, and per-species rankings, all filterable by date range, species, and origin.
+
+## Data models
+
+### ScanEvent
+
+`ScanEvent` is written on every exhibit access, including anonymous visits.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `Integer` | Auto-increment primary key. |
+| `species_id` | `String(64)` | Foreign key to the scanned species. Indexed. |
+| `user_id` | `Integer` | Foreign key to the authenticated user. `NULL` for anonymous scans. Indexed. |
+| `qr_id` | `String(64)` | The `qr_id` slug of the species at the time of the scan. |
+| `origin` | `String(20)` | How the scan was initiated: `qr`, `web`, or `manual`. Indexed. |
+| `scanned_at` | `DateTime` | UTC timestamp of the scan event. Indexed. |
+
+### Visit
+
+`Visit` tracks whether an authenticated user has visited a specific species at least once. It is used for the "tour completion" celebration and for personalizing the RAG chatbot context.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `Integer` | Auto-increment primary key. |
+| `user_id` | `Integer` | Foreign key to the user. |
+| `species_id` | `String(64)` | Foreign key to the species. |
+| `visited_at` | `DateTime` | UTC timestamp of the first visit. |
+
+When an authenticated user's visit count equals the total number of species in the catalog, a celebration screen is shown on the exhibit page.
+
+<Note>
+  `ScanEvent` is written for all visitors (authenticated and anonymous). `Visit` is only written for authenticated users, and only once per user+species pair.
+</Note>
+
+## Metrics dashboard
+
+The admin dashboard is available at `GET /admin/metricas`. It presents four summary cards, a ranked species table, and two charts.
+
+### Summary cards
+
+| Card | Field | Description |
+|---|---|---|
+| Total scans | `summary.total_scans` | Total `ScanEvent` rows matching the current filters. |
+| Unique users | `summary.unique_users` | Count of distinct authenticated `user_id` values in the filtered range. |
+| Species scanned | `summary.scanned_species_count` | Count of distinct `species_id` values in the filtered range. |
+| Most scanned | `summary.most_scanned_species` | Species with the highest scan count in the filtered range (name, `qr_id`, and total). |
+
+### Species ranking table
+
+Each row represents one species and shows:
+
+| Column | Source field |
+|---|---|
+| Species name | `nombre_comun` |
+| Scientific name | `nombre_cientifico` |
+| QR ID | `qr_id` |
+| Total scans | `total_scans` |
+| Unique users | `unique_users` |
+| Last scan | `last_scan` (formatted `YYYY-MM-DD HH:MM`) |
+
+Rows are ordered by `total_scans` descending.
+
+### Charts
+
+- **Daily scan counts** — a time-series chart with one data point per calendar day in the selected date range. Days with zero scans are filled in automatically so the series is always continuous.
+- **Origin breakdown** — a breakdown chart showing counts for each of the three origins: QR, Web, and Manual.
+
+## Dashboard filters
+
+All filters are passed as query parameters to both the HTML dashboard and the JSON API.
+
+| Parameter | Description | Default |
+|---|---|---|
+| `start` | Start date (`YYYY-MM-DD`) | 30 days before today |
+| `end` | End date (`YYYY-MM-DD`) | Today |
+| `species_id` | Filter by a single species ID | *(all species)* |
+| `origin` | Filter by scan origin: `qr`, `web`, or `manual` | *(all origins)* |
+
+If `start` is after `end`, the two values are swapped automatically. Invalid dates fall back to the default 30-day window.
+
+## JSON API
+
+The same data available in the dashboard is also exposed as a JSON endpoint:
+
+```
+GET /api/admin/metricas
+```
+
+The endpoint accepts the same query parameters as the dashboard and returns a single JSON object.
+
+### Response structure
+
+The table below documents every key in the response from `build_scan_metrics_context()`.
+
+| Key | Type | Description |
+|---|---|---|
+| `filters.start` | `string` | Effective start date used for the query (`YYYY-MM-DD`). |
+| `filters.end` | `string` | Effective end date used for the query (`YYYY-MM-DD`). |
+| `filters.species_id` | `string` | Active species filter, or empty string. |
+| `filters.origin` | `string` | Active origin filter, or empty string. |
+| `filters.species_options` | `array` | All species available for the filter dropdown (`id`, `qr_id`, `nombre_comun`, `nombre_cientifico`). |
+| `summary.total_scans` | `integer` | Total scan events in the filtered range. |
+| `summary.unique_users` | `integer` | Distinct authenticated users in the filtered range. |
+| `summary.scanned_species_count` | `integer` | Distinct species scanned in the filtered range. |
+| `summary.most_scanned_species` | `object \| null` | Top species object (`id`, `qr_id`, `nombre_comun`, `nombre_cientifico`, `total_scans`), or `null` if no scans. |
+| `ranking` | `array` | Ordered list of species objects with `species_id`, `qr_id`, `nombre_comun`, `nombre_cientifico`, `total_scans`, `unique_users`, `last_scan`. |
+| `chart_data.daily.dates` | `array[string]` | Full list of dates in the range (`YYYY-MM-DD`), one entry per day. |
+| `chart_data.daily.counts` | `array[integer]` | Scan count per day, aligned to `dates`. Zero-filled for days without scans. |
+| `chart_data.origin.labels` | `array[string]` | Always `["QR", "Web", "Manual"]`. |
+| `chart_data.origin.counts` | `array[integer]` | Scan counts for each origin label, in the same order. |
+
+### Example response
+
+```json
+{
+  "filters": {
+    "start": "2025-05-01",
+    "end": "2025-05-31",
+    "species_id": "",
+    "origin": "",
+    "species_options": [
+      {
+        "id": "condor-001",
+        "qr_id": "condor-001",
+        "nombre_comun": "Cóndor Andino",
+        "nombre_cientifico": "Vultur gryphus"
+      }
+    ]
+  },
+  "summary": {
+    "total_scans": 312,
+    "unique_users": 47,
+    "scanned_species_count": 18,
+    "most_scanned_species": {
+      "id": "condor-001",
+      "qr_id": "condor-001",
+      "nombre_comun": "Cóndor Andino",
+      "nombre_cientifico": "Vultur gryphus",
+      "total_scans": 54
+    }
+  },
+  "ranking": [
+    {
+      "species_id": "condor-001",
+      "qr_id": "condor-001",
+      "nombre_comun": "Cóndor Andino",
+      "nombre_cientifico": "Vultur gryphus",
+      "total_scans": 54,
+      "unique_users": 22,
+      "last_scan": "2025-05-31 14:07"
+    }
+  ],
+  "chart_data": {
+    "daily": {
+      "dates": ["2025-05-01", "2025-05-02"],
+      "counts": [8, 11]
+    },
+    "origin": {
+      "labels": ["QR", "Web", "Manual"],
+      "counts": [240, 58, 14]
+    }
+  }
+}
+```
+
+## Seeding demo data
+
+To populate the database with realistic-looking scan events for testing the dashboard, run:
+
+```bash
+flask seed-demo-data
+```
+
+This command generates approximately 1,500 `ScanEvent` rows distributed across the last 90 days. It applies a realistic daily volume pattern — higher counts on weekends and typical museum visiting hours — and a popularity curve where the first species in the catalog receive proportionally more scans than later ones. Origins are weighted toward `qr` (the most common physical use case), followed by `web`, then `manual`.
+
+<Warning>
+  `seed-demo-data` requires at least one species (run `flask seed` first) and at least one user (run `flask create-admin` and `flask create-user` first). The command appends to existing data, so running it multiple times will accumulate additional events.
+</Warning>
+
+<Tip>
+  After seeding, open the metrics dashboard and set the date range to the last 90 days to see the full demo dataset. You can then test filtering by species or origin to verify the JSON API response shape before integrating a custom frontend.
+</Tip>

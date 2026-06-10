@@ -1,0 +1,105 @@
+---
+title: "Public Species TTS Data Endpoint for BioScan Museo"
+sidebarTitle: "Public TTS"
+description: "GET /api/public/species/<qr_id>/tts — serves species content to the servertts sidecar for audio pre-generation. Secured with X-Museo-API-Key header."
+---
+
+BioScan Museo's audio narration system is handled by a separate `servertts` microservice. That service needs a machine-readable snapshot of each species' content fields to generate pre-recorded MP3 files in three narration styles. The `/api/public/species/<qr_id>/tts` endpoint serves this structured payload. Its response shape is defined by `build_species_tts_payload()` in `app.py`, and the `X-Museo-API-Key` header value must match the `MUSEO_TTS_SHARED_KEY` environment variable shared between the two services.
+
+---
+
+## GET /api/public/species/\<qr\_id\>/tts
+
+Returns the TTS content payload for a single species identified by its QR slug. This endpoint is called internally by the `servertts` container to fetch species data before generating or refreshing audio narrations. It is not intended for direct use by museum visitors or third-party clients.
+
+**Authentication:** The caller must supply the shared inter-service API key in the `X-Museo-API-Key` request header. Requests with a missing or incorrect key are rejected.
+
+### Path parameter
+
+<ParamField path="qr_id" type="string" required>
+  The species' QR identifier, matching `^[a-z0-9-_]+$`. Sanitised server-side by `sanitize_id()`. Returns `404` if no species with the given `qr_id` exists in the database.
+</ParamField>
+
+### Request headers
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Museo-API-Key` | Yes | Must equal the value of the `MUSEO_TTS_SHARED_KEY` environment variable on the Flask server. |
+
+### Response
+
+The response is `200 OK` with `Content-Type: application/json`.
+
+<ResponseField name="species_id" type="string">
+  The internal primary-key ID of the species record (same as `Species.id`).
+</ResponseField>
+
+<ResponseField name="qr_id" type="string">
+  The QR slug. Falls back to `species_id` if `qr_id` is not set on the record.
+</ResponseField>
+
+<ResponseField name="common_name" type="string">
+  Common (display) name of the species (`nombre_comun`). Empty string if not set.
+</ResponseField>
+
+<ResponseField name="scientific_name" type="string">
+  Scientific name (`nombre_cientifico`). Empty string if not set.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Free-text species description (`descripcion`). Empty string if not set.
+</ResponseField>
+
+<ResponseField name="habitat" type="string">
+  Habitat description (`habitat`). Empty string if not set.
+</ResponseField>
+
+<ResponseField name="diet" type="string">
+  Diet description (`dieta`). Empty string if not set.
+</ResponseField>
+
+<ResponseField name="curiosities" type="array">
+  List of curiosity strings (`curiosidades`). Deserialised from the `curiosidades_json` column. Returns an empty array if no curiosities are stored.
+</ResponseField>
+
+### Example request
+
+```bash
+curl -s \
+  -H "X-Museo-API-Key: your-shared-tts-key" \
+  https://your-museum.example.com/api/public/species/condor-001/tts
+```
+
+### Example response
+
+```json
+{
+  "species_id": "condor-001",
+  "qr_id": "condor-001",
+  "common_name": "Cóndor Andino",
+  "scientific_name": "Vultur gryphus",
+  "description": "Ave carroñera emblemática de los Andes colombianos.",
+  "habitat": "Zonas montañosas andinas por encima de los 3 000 m.",
+  "diet": "Carroña de mamíferos grandes como llamas, vacas y caballos.",
+  "curiosities": [
+    "Planea largas distancias sin batir las alas aprovechando corrientes térmicas.",
+    "Puede pasar varios días sin comer y luego consumir hasta 5 kg de carroña de una sola vez."
+  ]
+}
+```
+
+### How it fits into the TTS pipeline
+
+When an admin creates or edits a species, the Flask app calls `sync_species_to_tts()`, which posts the `build_species_tts_payload()` result to the `servertts` `/internal/species/sync` endpoint. The `servertts` service stores the payload locally and uses it to pre-generate audio in three narration styles:
+
+| Style | Character |
+|-------|-----------|
+| `ficha` | Concise fact-sheet read-out — name, habitat, diet, curiosities. |
+| `narrativo` | Extended narrative paragraph suitable for guided tours. |
+| `corto` | Short 1–2 sentence summary for quick kiosk playback. |
+
+The generated MP3 files are served by `servertts` at `GET /tts/by-qr/<qr_id>?key=<TTS_API_KEY>&style=<style>`, and a `servertts` health check is available at `GET /health`.
+
+<Note>
+  This endpoint is intended exclusively for the `servertts` sidecar. External callers — including kiosk apps and mobile clients — should request audio from the TTS service directly at `GET /tts/by-qr/<qr_id>?key=<TTS_API_KEY>` rather than calling this Flask endpoint. The TTS service runs on port `8010` by default and has its own `TTS_API_KEY` separate from `MUSEO_TTS_SHARED_KEY`.
+</Note>

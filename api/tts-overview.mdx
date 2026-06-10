@@ -1,0 +1,127 @@
+---
+title: "TTS Service Architecture and Authentication"
+sidebarTitle: "TTS Overview"
+description: "BioScan Museo Edge TTS sidecar pre-generates MP3 audio per species and serves it by QR ID. Covers authentication schemes and Flask integration flow."
+---
+
+The TTS sidecar is a standalone **FastAPI 2.0** application (`Servertts/app/main.py`) that runs on port **8010** alongside the main Flask app. Its job is to pre-generate three MP3 narration files per species using Microsoft Edge TTS, index them by QR code, and serve them on demand — so that audio playback on an ESP32 or browser never waits for on-the-fly synthesis.
+
+## Authentication Schemes
+
+The service has two separate authentication paths depending on who is calling.
+
+### Public Endpoints — `?key=<TTS_API_KEY>`
+
+Every endpoint under `/tts/*`, `/qr/*`, and `/ws/*` is authenticated via a **query parameter**:
+
+```
+GET /tts/by-qr/condor-001?key=YOUR_TTS_API_KEY
+```
+
+The value must match the `TTS_API_KEY` environment variable configured in `Servertts/.env`. This key is intended for external consumers such as ESP32 devices, mobile apps, and browser clients.
+
+### Internal Endpoints — `X-API-Key` Header
+
+Endpoints under `/internal/*` are reserved for the Flask app and require the shared secret transmitted as a request **header**:
+
+```
+X-API-Key: YOUR_MUSEO_API_KEY
+```
+
+The TTS service reads this from the `MUSEO_API_KEY` environment variable (set equal to `MUSEO_TTS_SHARED_KEY` in the Docker Compose stack). Requests with a missing or mismatched header receive `401 unauthorized`.
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TTS_API_KEY` | _(required)_ | Authenticates public `/tts/*`, `/qr/*`, `/ws/*` callers |
+| `MUSEO_API_KEY` | _(required)_ | Authenticates internal `/internal/*` calls from Flask |
+| `MUSEO_TTS_PUBLIC_BASE_URL` | `""` | Public base URL used to build `audio_url` in responses |
+| `EDGE_TTS_VOICE` | `es-CO-GonzaloNeural` | Microsoft Edge TTS voice |
+| `EDGE_TTS_RATE` | `+0%` | Speech rate adjustment |
+| `EDGE_TTS_VOLUME` | `+0%` | Volume adjustment |
+| `AUDIO_CACHE_DIR` | `./cache_audio` | Root directory for pre-generated MP3 files |
+| `DEBUG_FRAMES_DIR` | `./debug_frames` | Directory where received JPEG frames are saved |
+
+## Audio Cache Structure
+
+Pre-generated audio files are stored under `AUDIO_CACHE_DIR` using the following layout:
+
+```
+AUDIO_CACHE_DIR/
+├── _qr_index.json               # qr_id → species_id map
+└── species/
+    └── <species_id>/
+        ├── meta.json            # Synced species metadata + generation info
+        ├── ficha.mp3            # Factual narration style
+        ├── narrativo.mp3        # Story-format narration style
+        └── corto.mp3            # Short summary narration style
+```
+
+The `_qr_index.json` file maps every registered `qr_id` to its canonical `species_id`. When a QR code is scanned, the service looks up this index to locate the correct audio directory.
+
+## Narration Styles
+
+Three styles are built by `build_text_from_species()` and pre-generated at sync time:
+
+| Style | Format | Description |
+|---|---|---|
+| `ficha` | Factual | Opens with name and scientific name, then description, habitat, diet, and up to 3 curiosities |
+| `narrativo` | Story | Opens with _"Te cuento sobre…"_, then scientific name, description, habitat, diet, and curiosities |
+| `corto` | Short summary | Name, scientific name, brief description, habitat, diet, and only the first curiosity |
+
+## Flask Integration Flow
+
+```
+Flask (create/edit species)
+    │
+    ▼  POST /internal/species/sync
+    │  X-API-Key: MUSEO_API_KEY
+    │  Body: { species_id, qr_id, common_name, ... }
+    │
+TTS Service
+    ├── Validates IDs against ^[A-Za-z0-9_-]+$
+    ├── Builds text for ficha / narrativo / corto
+    ├── Calls edge_tts.Communicate → writes ficha.mp3, narrativo.mp3, corto.mp3
+    ├── Writes species/meta.json
+    └── Updates _qr_index.json  (qr_id → species_id)
+```
+
+When a species is deleted in Flask, it calls `POST /internal/species/delete` which removes the audio directory and purges all QR index entries for that species.
+
+## ID Validation
+
+All `species_id` and `qr_id` values must match the regular expression **`^[A-Za-z0-9_-]+$`**. Requests containing IDs with spaces, slashes, or special characters will receive a `400 invalid_species_id` or `400 invalid_qr_id` error.
+
+## Health Check
+
+A lightweight health endpoint is available without authentication:
+
+```bash
+curl http://localhost:8010/health
+```
+
+```json
+{
+  "ok": true,
+  "service": "museo-tts",
+  "voice": "es-CO-GonzaloNeural"
+}
+```
+
+## Endpoint Groups
+
+<CardGroup cols={2}>
+  <Card title="Internal Sync" icon="arrows-rotate" href="/api/tts-endpoints#post-internalspeciessync">
+    Flask-to-TTS calls that pre-generate and delete species audio. Protected by `X-API-Key` header.
+  </Card>
+  <Card title="TTS by QR" icon="music" href="/api/tts-endpoints#get-ttsby-qrqr_id">
+    Serve pre-generated MP3 by QR ID or synthesize ad-hoc speech from arbitrary text.
+  </Card>
+  <Card title="Frame / QR Resolution" icon="camera" href="/api/tts-endpoints#post-qrresolve-frame">
+    POST raw JPEG bytes to detect a QR code and retrieve species text or audio in one step.
+  </Card>
+  <Card title="Debug" icon="bug" href="/api/tts-endpoints#get-debugview">
+    Browser-viewable debug page plus JSON status endpoint — no auth required.
+  </Card>
+</CardGroup>

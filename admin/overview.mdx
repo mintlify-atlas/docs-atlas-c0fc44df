@@ -1,0 +1,76 @@
+---
+title: "BioScan Museo Admin Panel Overview"
+sidebarTitle: "Overview"
+description: "The BioScan Museo admin panel covers species management, QR code customization, scan metrics, and audit logs — all protected by admin-only login."
+---
+
+The BioScan Museo admin panel gives authorized staff full control over the museum's digital catalog. From a single interface, admins can create and edit species records, customize printed QR codes, review visitor scan metrics, and trace every content change through the built-in audit log. All admin routes are protected by role-based access: only users with the `is_admin` flag set to `true` can reach them.
+
+## Authentication and Access Control
+
+Admins log in at `/login` using a username and password, exactly like regular users. After login, every admin route calls the `admin_required()` helper, which checks `current_user.is_admin`. If the flag is `false` or the user is not authenticated, the helper calls `abort(403)`, returning an **Access Denied** response. There is no separate admin login page — the `is_admin` flag is set at account creation time (via CLI or direct DB seeding) and is never exposed through the public registration form.
+
+<Note>
+  The `/register` route always creates a regular (non-admin) user. Admin accounts must be created with the `flask --app app.py create-admin` CLI command or seeded manually.
+</Note>
+
+## Admin Route Reference
+
+Every URL in the table below requires an active admin session. Attempting to access them without the `is_admin` flag results in a `403 Forbidden` response.
+
+| URL | Method | Description |
+|-----|--------|-------------|
+| `/admin/especies` | GET | Species list with full-text search, family/order filter, and pagination (10 per page) |
+| `/admin/especies/nueva` | GET | Render the blank species creation form |
+| `/admin/especies/nueva` | POST | Submit and save a new species record, trigger RAG reindex and TTS sync |
+| `/admin/especies/<id>/editar` | GET | Load an existing species into the edit form, including its uploaded museum docs |
+| `/admin/especies/<id>/editar` | POST | Save changes, log per-field diffs to the audit log, reindex RAG, sync TTS |
+| `/admin/especies/<id>/eliminar` | POST | Permanently delete a species and its museum docs, log deletion in audit trail |
+| `/admin/especies/<id>/reindex` | POST | Manually trigger a ChromaDB reindex for a single species |
+| `/admin/especies/<id>/docs/<doc_id>/eliminar` | POST | Delete a specific museum document (PDF, DOCX, or TXT) and reindex |
+| `/admin/qr` | GET | List all species with QR code management links, highlight customized codes |
+| `/admin/qr/<id>` | GET | Preview the generated QR image and current style settings for a species |
+| `/admin/qr/<id>/personalizar` | GET | Open the QR style editor (frame, module shape, colors, label text) |
+| `/admin/qr/<id>/personalizar` | POST | Save QR style overrides and update the species `qr_id` if changed |
+| `/admin/qr/<id>/personalizar/reset` | POST | Remove all custom QR styles, restoring the default simple square code |
+| `/admin/metricas` | GET | Scan metrics dashboard: totals, unique users, species rankings, daily and origin charts |
+| `/admin/especies/auditoria` | GET | Paginated audit log with filters for species, action type, user, and date range |
+
+## User Model
+
+Every account in BioScan Museo is stored as a single `User` record. The `is_admin` column is the sole gate for admin access.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | Integer (PK) | Auto-increment primary key |
+| `nombre` | String(120) | Full display name of the user |
+| `edad` | Integer | User's age, required at registration |
+| `username` | String(80) | Unique login handle, stored lowercase |
+| `password_hash` | String(255) | Werkzeug-hashed password, never stored in plain text |
+| `is_admin` | Boolean | `true` grants access to all admin routes; defaults to `false` |
+| `created_at` | DateTime | Account creation timestamp (UTC) |
+
+## User Roles
+
+BioScan Museo has two user roles. There is no role management UI — roles are set at creation time.
+
+**Admin users** (`is_admin = true`) can access all routes in the table above, including species CRUD, QR customization, scan metrics, and the audit log. They can also browse the public catalog and use the chat guide like any regular visitor.
+
+**Regular users** (`is_admin = false`) can browse the species catalog at `/especies`, scan QR codes to reach species detail pages, use the AI chat guide on each species page, and track their own museum visit progress. They have no access to any `/admin/*` route and will receive a `403` response if they attempt to reach one directly.
+
+## Main Admin Sections
+
+<CardGroup cols={2}>
+  <Card title="Species Management" icon="leaf" href="/guides/species-management">
+    Create, edit, and delete species records. Upload images, audio files, and museum documents (PDF, DOCX, TXT). Each save triggers a ChromaDB RAG reindex and optional TTS audio sync automatically.
+  </Card>
+  <Card title="QR Code Customization" icon="qrcode" href="/guides/qr-codes">
+    Customize the style of every printed QR code: choose from four frame styles (Simple, Card, Badge, Scan Me) and four module shapes, and set fill, background, and accent colors. Download finished codes as PNG or JPG.
+  </Card>
+  <Card title="Scan Metrics" icon="chart-bar" href="/guides/scan-metrics">
+    Review scan counts, unique visitor numbers, and species engagement rankings over any date range. Filter by species or scan origin (QR, Web, Manual) and explore daily trend and origin-breakdown charts.
+  </Card>
+  <Card title="Audit Log" icon="clipboard-list" href="/admin/audit-log">
+    Trace every admin action — species creation, field-level edits, deletions, and admin page views — with timestamps, before/after values, and snapshot data that persists even after a species is deleted.
+  </Card>
+</CardGroup>

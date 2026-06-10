@@ -1,0 +1,295 @@
+---
+title: "Admin Metrics and Audit Log API Endpoints"
+sidebarTitle: "Metrics"
+description: "Admin-only JSON endpoints for scan metrics and species change history. Supports date range, species, origin, and action filters. Requires is_admin=true."
+---
+
+BioScan Museo records two distinct activity streams: raw scan events (every time a visitor scans or views a species) and species audit log entries (every admin action such as creating, editing, or deleting a species). Both streams are exposed as filterable JSON endpoints for dashboards, exports, and automated reporting. Both endpoints share their logic with the corresponding HTML admin pages, so any filter accepted by the UI is equally valid here.
+
+All requests must be made by an authenticated session whose user account has `is_admin = True`. Unauthenticated requests are redirected to the login page (HTTP `302`); authenticated non-admin requests abort with HTTP `403`.
+
+---
+
+## GET /api/admin/metricas
+
+Returns aggregated scan metrics for the given date range and optional filters. The response is built by `build_scan_metrics_context()`, which runs a set of SQL aggregation queries against the `ScanEvent` table.
+
+**Authentication:** Login required + `is_admin = True`. Returns `403` for authenticated non-admin users.
+
+### Query parameters
+
+<ParamField query="start" type="string">
+  Start date of the reporting window in `YYYY-MM-DD` format. Defaults to 30 days before today. If `start` is later than `end`, the two values are silently swapped.
+</ParamField>
+
+<ParamField query="end" type="string">
+  End date (inclusive) in `YYYY-MM-DD` format. Defaults to today (UTC). Invalid date strings fall back to the default 30-day window.
+</ParamField>
+
+<ParamField query="species_id" type="string">
+  Filter results to a single species by its internal ID. Ignored if the species does not exist in the database.
+</ParamField>
+
+<ParamField query="origin" type="string">
+  Filter by scan origin. Accepted values: `qr`, `web`, `manual`. Any other value (including empty) is ignored and treated as "all origins".
+</ParamField>
+
+### Response
+
+<ResponseField name="filters" type="object">
+  The resolved filter values applied to this request.
+
+  <Expandable title="filters fields">
+    <ResponseField name="start" type="string">
+      Effective start date as `YYYY-MM-DD`.
+    </ResponseField>
+    <ResponseField name="end" type="string">
+      Effective end date as `YYYY-MM-DD`.
+    </ResponseField>
+    <ResponseField name="species_id" type="string">
+      Effective species ID filter, or empty string if not applied.
+    </ResponseField>
+    <ResponseField name="origin" type="string">
+      Effective origin filter, or empty string if not applied.
+    </ResponseField>
+    <ResponseField name="species_options" type="array">
+      All species in the database for populating a filter dropdown. Each item contains `id`, `qr_id`, `nombre_comun`, and `nombre_cientifico`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  Top-level aggregate metrics for the filtered window.
+
+  <Expandable title="summary fields">
+    <ResponseField name="total_scans" type="integer">
+      Total number of `ScanEvent` rows matching the filters.
+    </ResponseField>
+    <ResponseField name="unique_users" type="integer">
+      Count of distinct authenticated users (`user_id IS NOT NULL`) who scanned within the filtered window.
+    </ResponseField>
+    <ResponseField name="scanned_species_count" type="integer">
+      Count of distinct species (`species_id`) that received at least one scan in the filtered window.
+    </ResponseField>
+    <ResponseField name="most_scanned_species" type="object | null">
+      The species with the highest scan count. `null` when `total_scans` is `0`. Contains `id`, `qr_id`, `nombre_comun`, `nombre_cientifico`, and `total_scans`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="ranking" type="array">
+  Per-species scan breakdown, ordered by `total_scans` descending. Each item contains:
+
+  | Field | Type | Description |
+  |-------|------|-------------|
+  | `species_id` | string | Internal species ID. |
+  | `qr_id` | string | QR identifier slug. |
+  | `nombre_comun` | string | Common name. |
+  | `nombre_cientifico` | string | Scientific name. |
+  | `total_scans` | integer | Total scans for this species in the window. |
+  | `unique_users` | integer | Distinct authenticated users who scanned it. |
+  | `last_scan` | string | Timestamp of the most recent scan, formatted as `YYYY-MM-DD HH:MM`. Empty string if unavailable. |
+</ResponseField>
+
+<ResponseField name="chart_data" type="object">
+  Pre-formatted data arrays for rendering charts.
+
+  <Expandable title="chart_data fields">
+    <ResponseField name="daily" type="object">
+      Daily scan counts spanning the full date range (zero-filled for days with no scans). Contains `dates` (array of `YYYY-MM-DD` strings) and `counts` (array of integers, same length).
+    </ResponseField>
+    <ResponseField name="origin" type="object">
+      Scan counts grouped by origin. Contains `labels` (`["QR", "Web", "Manual"]`) and `counts` (array of 3 integers, always in that order). Days with no events for a given origin contribute `0`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash
+curl -s \
+  -H "Cookie: session=<admin-session-cookie>" \
+  "https://your-museum.example.com/api/admin/metricas?start=2024-11-01&end=2024-11-30&origin=qr"
+```
+
+```json
+{
+  "filters": {
+    "start": "2024-11-01",
+    "end": "2024-11-30",
+    "species_id": "",
+    "origin": "qr",
+    "species_options": [
+      { "id": "condor-001", "qr_id": "condor-001", "nombre_comun": "Cóndor Andino", "nombre_cientifico": "Vultur gryphus" }
+    ]
+  },
+  "summary": {
+    "total_scans": 412,
+    "unique_users": 87,
+    "scanned_species_count": 14,
+    "most_scanned_species": {
+      "id": "condor-001",
+      "qr_id": "condor-001",
+      "nombre_comun": "Cóndor Andino",
+      "nombre_cientifico": "Vultur gryphus",
+      "total_scans": 58
+    }
+  },
+  "ranking": [
+    {
+      "species_id": "condor-001",
+      "qr_id": "condor-001",
+      "nombre_comun": "Cóndor Andino",
+      "nombre_cientifico": "Vultur gryphus",
+      "total_scans": 58,
+      "unique_users": 41,
+      "last_scan": "2024-11-30 17:23"
+    }
+  ],
+  "chart_data": {
+    "daily": {
+      "dates": ["2024-11-01", "2024-11-02"],
+      "counts": [18, 22]
+    },
+    "origin": {
+      "labels": ["QR", "Web", "Manual"],
+      "counts": [412, 0, 0]
+    }
+  }
+}
+```
+
+---
+
+## GET /api/admin/especies/auditoria
+
+Returns a paginated, filterable list of species audit log entries from the `SpeciesAuditLog` table. Audit events are created automatically whenever a species is created, updated, deleted, or viewed by an admin. Snapshots of the species name, scientific name, and `qr_id` are stored at write time so that log entries remain informative even after a species is deleted.
+
+**Authentication:** Login required + `is_admin = True`. Returns `403` for authenticated non-admin users.
+
+### Query parameters
+
+<ParamField query="species_id" type="string">
+  Filter by species internal ID. Accepted even if the species has been deleted, as long as historical log entries reference it.
+</ParamField>
+
+<ParamField query="action" type="string">
+  Filter by action type. Accepted values: `created`, `updated`, `deleted`, `viewed_admin`. Any other value is ignored.
+</ParamField>
+
+<ParamField query="user_id" type="string">
+  Filter by the integer user ID of the admin who performed the action. Ignored if the user does not exist.
+</ParamField>
+
+<ParamField query="start" type="string">
+  Start date in `YYYY-MM-DD` format. Defaults to 30 days before today.
+</ParamField>
+
+<ParamField query="end" type="string">
+  End date (inclusive) in `YYYY-MM-DD` format. Defaults to today (UTC).
+</ParamField>
+
+<ParamField query="page" type="integer">
+  Page number for pagination. Defaults to `1`. Each page contains 10 items.
+</ParamField>
+
+### Response
+
+<ResponseField name="filters" type="object">
+  Resolved filter values.
+
+  <Expandable title="filters fields">
+    <ResponseField name="species_id" type="string">Effective species filter, or empty string.</ResponseField>
+    <ResponseField name="action" type="string">Effective action filter, or empty string.</ResponseField>
+    <ResponseField name="user_id" type="string">Effective user ID filter, or empty string.</ResponseField>
+    <ResponseField name="start" type="string">Effective start date as `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="end" type="string">Effective end date as `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="species_options" type="array">All current species for dropdown rendering. Each item: `id`, `nombre_comun`.</ResponseField>
+    <ResponseField name="user_options" type="array">All admin users for dropdown rendering. Each item: `id`, `nombre`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="logs" type="array">
+  Paginated list of audit log entries. Each item contains:
+
+  | Field | Type | Description |
+  |-------|------|-------------|
+  | `id` | integer | Audit log row ID. |
+  | `species_id` | string | Internal species ID at the time of the event. |
+  | `species_name` | string | Common name from the species record, or from the snapshot if the species was deleted. |
+  | `species_scientific_name` | string | Scientific name (same fallback logic). |
+  | `qr_id` | string | QR identifier (same fallback logic). |
+  | `action` | string | One of `created`, `updated`, `deleted`, `viewed_admin`. |
+  | `field_name` | string \| null | The specific field that changed. Populated for `updated` events; `null` for others. |
+  | `old_value` | string \| null | Previous field value. Populated for `updated` events. |
+  | `new_value` | string \| null | New field value. Populated for `updated` events. |
+  | `created_at` | string | Event timestamp formatted as `YYYY-MM-DD HH:MM:SS`. |
+  | `user_id` | integer \| null | ID of the admin who triggered the event. `null` for system-generated events. |
+  | `user_name` | string | Display name of the user, or `"Sistema"` if `user_id` is `null`. |
+  | `notes` | string \| null | Free-text note attached to the event (e.g., `"Especie creada"`, `"Especie eliminada"`). |
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of log entries matching the filters across all pages.
+</ResponseField>
+
+<ResponseField name="pagination" type="object">
+  Pagination metadata.
+
+  <Expandable title="pagination fields">
+    <ResponseField name="page" type="integer">Current page number.</ResponseField>
+    <ResponseField name="pages" type="integer">Total number of pages.</ResponseField>
+    <ResponseField name="has_next" type="boolean">`true` if there is a next page.</ResponseField>
+    <ResponseField name="has_prev" type="boolean">`true` if there is a previous page.</ResponseField>
+    <ResponseField name="next_num" type="integer | null">Next page number, or `null` if on the last page.</ResponseField>
+    <ResponseField name="prev_num" type="integer | null">Previous page number, or `null` if on the first page.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash
+curl -s \
+  -H "Cookie: session=<admin-session-cookie>" \
+  "https://your-museum.example.com/api/admin/especies/auditoria?action=updated&page=1&start=2024-11-01&end=2024-11-30"
+```
+
+```json
+{
+  "filters": {
+    "species_id": "",
+    "action": "updated",
+    "user_id": "",
+    "start": "2024-11-01",
+    "end": "2024-11-30",
+    "species_options": [{ "id": "condor-001", "nombre_comun": "Cóndor Andino" }],
+    "user_options": [{ "id": 1, "nombre": "Administrador" }]
+  },
+  "logs": [
+    {
+      "id": 47,
+      "species_id": "condor-001",
+      "species_name": "Cóndor Andino",
+      "species_scientific_name": "Vultur gryphus",
+      "qr_id": "condor-001",
+      "action": "updated",
+      "field_name": "descripcion",
+      "old_value": "Ave carroñera.",
+      "new_value": "Ave carroñera emblemática de los Andes colombianos.",
+      "created_at": "2024-11-12 10:45:03",
+      "user_id": 1,
+      "user_name": "Administrador",
+      "notes": null
+    }
+  ],
+  "total": 1,
+  "pagination": {
+    "page": 1,
+    "pages": 1,
+    "has_next": false,
+    "has_prev": false,
+    "next_num": null,
+    "prev_num": null
+  }
+}
+```

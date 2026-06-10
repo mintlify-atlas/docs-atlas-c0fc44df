@@ -1,0 +1,163 @@
+---
+title: "Generate and Customize QR Codes for Museum Exhibits"
+sidebarTitle: "QR Codes"
+description: "Generate styled QR codes for each species exhibit in BioScan Museo. Customize frame style, module shape, colors, and text labels via the admin panel."
+---
+
+Every species in BioScan Museo has a unique QR code that visitors scan at physical exhibits to open the species page. The QR code encodes only the species `qr_id` slug. When scanned, a visitor's device hits `GET /scan/<qr_id>`, which records a scan event and redirects to the exhibit page. Admins can customize every visual aspect of each QR code — frame style, module shape, colors, and text labels — directly from the admin panel, then download the image for printing.
+
+## How QR scanning works
+
+<Steps>
+  <Step title="Visitor scans the code">
+    A physical QR code at the exhibit encodes the species `qr_id` string (e.g. `condor-001`). The visitor's camera app follows the encoded URL or the platform routes it to `GET /scan/<qr_id>`.
+  </Step>
+  <Step title="Scan event is recorded">
+    The `scan` route immediately records a `ScanEvent` with the species ID, the visitor's user ID (if authenticated), the `qr_id`, the scan origin, and the current timestamp. This happens for both authenticated and anonymous visitors.
+  </Step>
+  <Step title="Visit is registered (authenticated users only)">
+    If the visitor is logged in and has not visited this species before, a `Visit` record is created. Once a user has visited every species in the catalog, a celebration screen is shown.
+  </Step>
+  <Step title="Redirect to exhibit page">
+    The visitor is redirected to `GET /especie/<qr_id>`, which renders the full exhibit page with the species details, chatbot, and audio narration.
+  </Step>
+</Steps>
+
+## Scan origins
+
+The `origin` field on every `ScanEvent` indicates how the visit was initiated. Three values are accepted:
+
+| Origin | Meaning |
+|---|---|
+| `qr` | Physical QR code scanned with a camera (default when no origin is passed). |
+| `web` | Visitor navigated directly to the exhibit URL in a browser. |
+| `manual` | Admin accessed the exhibit directly from the admin panel. |
+
+Any value outside these three is normalized back to `qr`. You can pass the origin as a query parameter: `GET /especie/<qr_id>?origin=web`.
+
+## Admin QR routes
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/admin/qr` | Paginated QR code list with search and filter support. |
+| `GET` | `/admin/qr/<id>` | View the current QR image and style for a species. |
+| `GET` | `/admin/qr/<id>/personalizar` | Open the customization form. |
+| `POST` | `/admin/qr/<id>/personalizar` | Save the customized QR style. |
+| `POST` | `/admin/qr/<id>/personalizar/reset` | Reset the QR style back to defaults. |
+| `GET` | `/admin/qr/<id>/imagen.png` | Render and return the QR image as PNG. |
+| `GET` | `/admin/qr/<id>/imagen.jpg` | Render and return the QR image as JPEG. |
+
+## QR style options
+
+The customization form exposes all of the options described below. Saved styles are stored in the `QRStyle` model, keyed by `species_id`.
+
+### Frame style
+
+Controls the outer decorative frame drawn around the QR code.
+
+| Value | Display name | Description |
+|---|---|---|
+| `simple` | Simple | Thin rounded border using the accent color. |
+| `card` | Tarjeta | Rounded card frame with a thick accent-colored border. |
+| `badge` | Insignia | Rounded badge with a solid accent-colored header band. |
+| `scanme` | Scan me | Rounded frame with a solid accent-colored "ESCANEA" footer button. |
+
+### Module style
+
+Controls the shape of the individual QR modules (the dark squares).
+
+| Value | Display name |
+|---|---|
+| `square` | Cuadrado |
+| `rounded` | Redondeado |
+| `circle` | Circular |
+| `gapped` | Separado |
+
+### Colors
+
+All three color fields accept 6-digit hex values (e.g. `#059669`). 8-digit hex with alpha is also accepted. Invalid values fall back to the defaults shown below.
+
+| Field | Default | Description |
+|---|---|---|
+| `fill_color` | `#111827` | Module (foreground) color. |
+| `back_color` | `#ffffff` | Background color. |
+| `accent_color` | `#059669` | Frame border and header/footer fill color. |
+
+### Text labels
+
+Two text areas can be shown on the QR image: a header (`top_text`) and a footer label (`label_text`).
+
+| Field | Default | Constraint | Description |
+|---|---|---|---|
+| `top_text` | `BioScan` | Max 80 characters | Text shown above the QR code. |
+| `label_text` | *(empty)* | Max 160 characters | Text shown below the QR code. |
+| `show_top_text` | `true` | Boolean | Toggle visibility of the header text. |
+| `show_label_text` | `true` | Boolean | Toggle visibility of the footer label. |
+| `top_text_size` | `18` | 10–52 px | Font size of the header text. |
+| `label_text_size` | `18` | 10–52 px | Font size of the footer label. |
+
+### Size and quiet zone
+
+| Field | Default | Range | Description |
+|---|---|---|---|
+| `box_size` | `10` | 6–18 | Pixel size of each QR module. |
+| `border` | `4` | 2–10 | Quiet zone width in modules around the QR matrix. |
+
+## Default values
+
+When no `QRStyle` record exists for a species, `get_qr_defaults()` supplies the following values:
+
+```python
+{
+    "frame_style":    "simple",
+    "module_style":   "square",
+    "fill_color":     "#111827",
+    "back_color":     "#ffffff",
+    "accent_color":   "#059669",
+    "top_text":       "BioScan",
+    "label_text":     "",
+    "show_top_text":  True,
+    "show_label_text": True,
+    "top_text_size":  18,
+    "label_text_size": 18,
+    "box_size":       10,
+    "border":         4,
+}
+```
+
+Resetting a QR style (via `POST /admin/qr/<id>/personalizar/reset`) deletes the `QRStyle` row, returning the rendered image to these defaults.
+
+## Downloading QR images
+
+The image endpoint renders the QR on demand using Pillow. Both PNG and JPEG are supported.
+
+```
+GET /admin/qr/<species_id>/imagen.png
+GET /admin/qr/<species_id>/imagen.jpg
+```
+
+Add `?download=1` to the URL to receive a `Content-Disposition: attachment` header, which causes the browser to save the file rather than display it:
+
+```
+GET /admin/qr/<species_id>/imagen.png?download=1
+```
+
+The downloaded filename is automatically set to `qr-<qr_id>.png` (or `.jpg`).
+
+## Previewing a different QR ID
+
+You can preview how a different `qr_id` value would look on the same styled image without changing the saved record. Append `?preview_qr_id=<id>` to the image URL:
+
+```
+GET /admin/qr/<species_id>/imagen.png?preview_qr_id=rana-010
+```
+
+The QR matrix is re-generated with the preview value, but the style, colors, and text labels remain those saved for `<species_id>`.
+
+<Tip>
+  Use the preview parameter when designing a consistent QR template for a new batch of exhibits before the species records are fully populated.
+</Tip>
+
+<Note>
+  After saving a new QR style, the system automatically calls `sync_species_to_tts()` to push the updated `qr_id` to the TTS service. If the sync fails, a flash warning is shown but the QR style is still persisted.
+</Note>

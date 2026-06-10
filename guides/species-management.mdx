@@ -1,0 +1,144 @@
+---
+title: "Manage Bird Species in the BioScan Museo Admin Panel"
+sidebarTitle: "Species Management"
+description: "Add, edit, and delete bird species in BioScan Museo. Upload images, audio, and museum documents that power the RAG chatbot and TTS narration."
+---
+
+The species catalog is the foundation of BioScan Museo. Every exhibit, QR code, chatbot response, and TTS narration is built from the data stored in each species record. Admins can create and update species entries through the admin panel, upload supporting media and museum documents, and trigger automatic re-indexing into the RAG vector store.
+
+## Species model fields
+
+Each species record maps directly to the `Species` database model. The table below describes every field available in the admin form.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `String(64)` | Primary key — set to the same value as `qr_id` on creation. |
+| `qr_id` | `String(64)` | Unique URL-safe slug used in QR codes and URLs. Only lowercase letters, numbers, hyphens, and underscores are accepted (e.g. `condor-001`). |
+| `nombre_comun` | `String(200)` | **Required.** Common name shown to visitors (e.g. *Cóndor Andino*). |
+| `nombre_cientifico` | `String(200)` | Scientific name in binomial notation (e.g. *Vultur gryphus*). |
+| `familia` | `String(120)` | Taxonomic family. Used for species comparison eligibility. |
+| `orden` | `String(120)` | Taxonomic order. Also used for comparison eligibility. |
+| `descripcion` | `Text` | Narrative description of the species shown on the exhibit page. |
+| `habitat` | `Text` | Habitat description (e.g. *Zonas montañosas andinas, acantilados y páramos*). |
+| `dieta` | `Text` | Diet description (e.g. *Carroña*). |
+| `zonas` | `Text` | Geographic distribution zones. |
+| `map_embed_url` | `String(600)` | Optional embed URL for a map shown on the exhibit page. |
+| `imagen` | `String(300)` | Relative path to the uploaded cover image (set automatically on upload). |
+| `audio` | `String(300)` | Relative path to the uploaded MP3 narration file (set automatically on upload). |
+| `museo_info` | `Text` | Free-form curatorial notes specific to the museum exhibit. This text is indexed into ChromaDB and used as a primary RAG source. |
+| `curiosidades` | `JSON array` | List of short curiosity strings stored as JSON. Enter one curiosity per line in the admin form. |
+| `thumb_pos_x` | `Integer` | Horizontal focal point for the thumbnail image (0–100, default `50`). |
+| `thumb_pos_y` | `Integer` | Vertical focal point for the thumbnail image (0–100, default `50`). |
+| `thumb_zoom` | `Integer` | Zoom percentage for the thumbnail image (80–200, default `100`). |
+
+## Admin routes
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/admin/especies` | Paginated species list with search and family/order filters. |
+| `GET` | `/admin/especies/nueva` | Blank form to create a new species. |
+| `POST` | `/admin/especies/nueva` | Submit the create form. |
+| `GET` | `/admin/especies/<id>/editar` | Edit form for an existing species, including its attached documents. |
+| `POST` | `/admin/especies/<id>/editar` | Submit the edit form. |
+| `POST` | `/admin/especies/<id>/eliminar` | Delete a species and all its associated documents. |
+
+All admin routes require an authenticated user with `is_admin = True`.
+
+## Adding a new species
+
+<Steps>
+  <Step title="Open the new species form">
+    Navigate to **Admin → Especies** and click **Nueva especie**. This opens the form at `/admin/especies/nueva`.
+  </Step>
+  <Step title="Fill in the required fields">
+    Enter a unique **ID QR** (e.g. `condor-001`) and a **Nombre común**. The ID QR becomes the permanent slug — it must contain only lowercase letters, numbers, hyphens, and underscores. The common name is the only other required field.
+  </Step>
+  <Step title="Complete the taxonomy and biology fields">
+    Fill in **Nombre científico**, **Familia**, **Orden**, **Descripción**, **Hábitat**, **Dieta**, **Zonas**, and any **Curiosidades** (one per line). These fields power the structured context sent to the LLM chatbot.
+  </Step>
+  <Step title="Add museum-specific notes">
+    Enter free text in the **Información del museo** field (`museo_info`). This is indexed directly into ChromaDB and is the primary source of specimen-specific answers in the chatbot (e.g. provenance, collection history, exhibit hall).
+  </Step>
+  <Step title="Upload media files">
+    Upload a cover **image** and an **audio** narration file. Optionally upload one or more **museum documents**. See supported formats below.
+  </Step>
+  <Step title="Set the thumbnail focal point">
+    Use the **Thumb Pos X**, **Thumb Pos Y**, and **Thumb Zoom** sliders to control how the cover image is cropped in listings. Values map to CSS `object-position` percentages. X and Y range from 0 to 100 (default 50); zoom ranges from 80 to 200 (default 100).
+  </Step>
+  <Step title="Save and verify indexing">
+    Submit the form. On success, the system automatically re-indexes the new species into the RAG vector store and syncs it to the TTS service. If either step fails, a flash warning is shown but the species record is still saved.
+  </Step>
+</Steps>
+
+## Supported file formats
+
+<CardGroup cols={3}>
+  <Card title="Images" icon="image">
+    `.jpg`, `.jpeg`, `.png`, `.webp`
+
+    Stored under `static/uploads/<species_id>/`. The path is saved in the `imagen` field.
+  </Card>
+  <Card title="Audio" icon="music">
+    `.mp3` only
+
+    Stored under `static/uploads/<species_id>/`. The path is saved in the `audio` field.
+  </Card>
+  <Card title="Museum Documents" icon="file-lines">
+    `.pdf`, `.docx`, `.txt`
+
+    Text is extracted and stored in the `MuseumDoc` table, then indexed into ChromaDB.
+  </Card>
+</CardGroup>
+
+## Document text extraction
+
+When a museum document is uploaded, BioScan Museo extracts its plain text before indexing:
+
+- **PDF** — extracted page by page using `PyPDF2.PdfReader`.
+- **DOCX** — paragraphs joined with newlines using `python-docx`.
+- **TXT** — read directly as UTF-8.
+
+The extracted text is stored in the `MuseumDoc.extracted_text` column and immediately chunked and embedded into ChromaDB via `VectorStore.reindex_species()`.
+
+## Automatic post-save actions
+
+After every create or edit operation, two background actions run in sequence:
+
+1. **RAG re-index** — `VectorStore.reindex_species(species_id, museo_info)` rebuilds all ChromaDB chunks for the species, including curatorial notes and all attached document texts.
+2. **TTS sync** — the species common name, scientific name, description, habitat, diet, and curiosities are pushed to the TTS service via an internal HTTP call. This regenerates the audio narration visitors hear on the exhibit page.
+
+You can also trigger a manual re-index from the edit form using the **Reindexar** button, which calls `POST /admin/especies/<id>/reindex`.
+
+<Note>
+  To re-index every species at once, run the CLI command:
+
+  ```bash
+  flask reindex-all
+  ```
+
+  This processes all species in ascending alphabetical order and prints a summary of successes and failures.
+</Note>
+
+## Thumbnail positioning
+
+The `thumb_pos_x`, `thumb_pos_y`, and `thumb_zoom` fields control how the cover image is displayed in the species listing grid. They translate directly to CSS `object-position` percentage values and a `scale` transform, letting you center the focal point of an image (such as a bird's head) without cropping it server-side.
+
+| Field | Range | Default | Effect |
+|---|---|---|---|
+| `thumb_pos_x` | 0–100 | `50` | Horizontal anchor (0 = left, 100 = right). |
+| `thumb_pos_y` | 0–100 | `50` | Vertical anchor (0 = top, 100 = bottom). |
+| `thumb_zoom` | 80–200 | `100` | Scale percentage of the image within its container. |
+
+## Species comparison
+
+Visitors can compare two species side by side at:
+
+```
+GET /especies/comparar?a=<qr_id>&b=<qr_id>
+```
+
+The comparison is only permitted when both species share the same `familia` or the same `orden`. If neither condition is met, an error is shown and the visitor is redirected to the species list. When a comparison is valid, an LLM analysis is generated asynchronously via `GET /api/especies/comparar/analysis`, returning a structured JSON object with `differences`, `similarities`, `adaptation_explanation`, and `visitor_message`.
+
+<Warning>
+  Attempting to compare two species that share neither family nor order returns a 400 error from the analysis API with `"error": "comparison_invalid"`. Always ensure both species have `familia` or `orden` populated before directing visitors to a comparison.
+</Warning>

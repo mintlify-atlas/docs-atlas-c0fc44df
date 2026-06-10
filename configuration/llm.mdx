@@ -1,0 +1,179 @@
+---
+title: "Configure the Ollama LLM Backend for BioScan Museo"
+sidebarTitle: "LLM Settings"
+description: "Configure BioScan Museo's Ollama LLM integration: choose local vs cloud, select chat and embedding models, set temperature, timeouts, and fallback."
+---
+
+BioScan Museo uses [Ollama](https://ollama.com) as its LLM backend for powering the species chat assistant and comparison analysis features. The `LLMClient` class in `llm.py` reads its configuration entirely from environment variables, giving you precise control over which model runs, where it runs (local Docker container or Ollama Cloud), how long requests may take, and what happens when the primary model is unavailable.
+
+All variables below should be placed in your `.env` file alongside the other application settings.
+
+---
+
+## Provider selection
+
+The provider controls whether requests are sent to a local Ollama instance or to Ollama Cloud.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_PROVIDER` | string | `auto` | Controls routing. Accepted values: `auto`, `local`, `cloud`. |
+| `OLLAMA_LOCAL_BASE_URL` | string | `http://127.0.0.1:11434` | Base URL of the local Ollama server. Takes precedence over `OLLAMA_BASE_URL`. |
+| `OLLAMA_BASE_URL` | string | `http://ollama:11434` | Fallback base URL for the local server when `OLLAMA_LOCAL_BASE_URL` is not set. |
+| `OLLAMA_CLOUD_BASE_URL` | string | `https://ollama.com` | Base URL for Ollama Cloud. Rarely needs to change. |
+| `OLLAMA_API_KEY` | string | — | Bearer token for Ollama Cloud authentication. Required when any model routes to the cloud. |
+
+### Auto-detect logic
+
+When `OLLAMA_PROVIDER=auto` (the default), the client inspects the model name to decide where to send the request:
+
+- Models whose name contains `:cloud` or `-cloud` → **cloud**
+- All other models → **local**
+
+```
+gpt-oss:20b-cloud   → cloud   (contains :cloud)
+gpt-oss:20b-local   → local
+qwen3.5:9b          → local
+```
+
+Setting `OLLAMA_PROVIDER=local` or `OLLAMA_PROVIDER=cloud` bypasses the name check and forces all requests to that destination regardless of model name.
+
+---
+
+## Chat model
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_CHAT_MODEL` | string | `llama3.1:8b` | The primary model used for all species chat and comparison requests. |
+| `OLLAMA_CHAT_URL` | string | `http://ollama:11434/api/chat` | Direct URL for the `/api/chat` endpoint. The `LLMClient` constructs this from `OLLAMA_LOCAL_BASE_URL` or `OLLAMA_CLOUD_BASE_URL` at runtime; you only need to set this explicitly for non-standard deployments. |
+
+---
+
+## Embedding model
+
+The embedding model is used by the `VectorStore` (`vector_store.py`) to index and query museum documents for Retrieval-Augmented Generation (RAG).
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_EMBED_URL` | string | `http://localhost:11434/api/embed` | Full URL of the Ollama `/api/embed` endpoint used for generating document embeddings. |
+| `OLLAMA_EMBED_MODEL` | string | `nomic-embed-text` | Embedding model name. `nomic-embed-text` is a compact, high-quality embedding model well suited for museum document retrieval. |
+
+---
+
+## Generation settings
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_TEMPERATURE` | float | `0.2` | Sampling temperature. Lower values produce more deterministic, factual responses — appropriate for a museum guide that should not hallucinate. |
+| `OLLAMA_KEEP_ALIVE` | string | `30m` | How long Ollama keeps the model loaded in GPU/CPU memory between requests. Uses Ollama's duration syntax: `30m`, `1h`, `0` (unload immediately), `-1` (keep forever). |
+
+---
+
+## Timeouts
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_CONNECT_TIMEOUT` | float | `10` | Seconds to wait when opening a TCP connection to the Ollama server. Raise this if the local Ollama container takes longer to accept connections on startup. |
+| `OLLAMA_READ_TIMEOUT` | float | _(no timeout)_ | Seconds to wait for the full response after the connection is established. Leave empty (the default) for no timeout — recommended for large models that generate long answers. Set a value (e.g. `120`) to abort slow requests automatically. |
+
+---
+
+## Thinking mode
+
+The `think` parameter is supported by Ollama for models that expose explicit reasoning. BioScan Museo passes it directly in the request payload.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_THINK` | string | `low` (in `.env.example`) | Controls whether and how much the model "thinks" before answering. Behavior depends on the model family. |
+
+**For `gpt-oss` models**, the accepted values are `low`, `medium`, `high`, and `false`. The model uses these to scale its internal reasoning budget. Any truthy value (e.g. `true`, `1`) maps to `medium`.
+
+**For all other models**, `OLLAMA_THINK` accepts `true` or `false` (boolean). The level strings `low`/`medium`/`high` are also forwarded as-is for models that support them.
+
+Setting `OLLAMA_THINK=false` (or leaving it empty) disables thinking entirely, which reduces latency at the cost of potentially shallower responses.
+
+---
+
+## Automatic fallback
+
+If the primary model fails — due to a network error, a timeout, or the cloud being unavailable — BioScan Museo can automatically retry the same conversation against a fallback model.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `OLLAMA_ENABLE_FALLBACK` | boolean | `true` | Set to `false` to disable fallback entirely and let primary failures propagate as errors. |
+| `OLLAMA_FALLBACK_MODEL` | string | `qwen3.5:9b` | Model to use when the primary request fails. Leave empty to disable fallback even if `OLLAMA_ENABLE_FALLBACK=true`. |
+| `OLLAMA_FALLBACK_PROVIDER` | string | `local` | Provider for the fallback model. Follows the same `auto`/`local`/`cloud` logic as `OLLAMA_PROVIDER`. |
+| `OLLAMA_FALLBACK_THINK` | string | `false` | Think setting for the fallback model. Keeping this `false` makes fallback requests faster. |
+
+<Note>
+Fallback only activates if no content has been streamed to the client yet. Once the first token is yielded, the stream is already open and a mid-response fallback is not possible.
+</Note>
+
+---
+
+## ChromaDB / Vector store
+
+These variables are read by `vector_store.py` to configure where the ChromaDB persistent store is written and the name of the species collection.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `CHROMA_PATH` | string | `chroma_db` | Filesystem path to the ChromaDB persistence directory. Can be relative (resolved from the project root) or absolute. |
+| `CHROMA_COLLECTION` | string | `museum_species` | Name of the ChromaDB collection that holds the museum document chunks. Changing this after initial indexing will result in an empty collection until `flask reindex-all` is run. |
+
+---
+
+## Configuration examples
+
+<Tabs>
+  <Tab title="Local only">
+    Run everything on a local Ollama instance inside Docker. No API key needed.
+
+    ```bash
+    OLLAMA_PROVIDER=local
+    OLLAMA_CHAT_MODEL=qwen3.5:9b
+    OLLAMA_LOCAL_BASE_URL=http://ollama:11434
+    OLLAMA_EMBED_URL=http://ollama:11434/api/embed
+    OLLAMA_EMBED_MODEL=nomic-embed-text
+    OLLAMA_TEMPERATURE=0.2
+    OLLAMA_KEEP_ALIVE=30m
+    OLLAMA_CONNECT_TIMEOUT=10
+    OLLAMA_THINK=false
+    OLLAMA_ENABLE_FALLBACK=false
+    ```
+  </Tab>
+  <Tab title="Cloud only">
+    Route all requests to Ollama Cloud. Requires a valid API key.
+
+    ```bash
+    OLLAMA_PROVIDER=cloud
+    OLLAMA_CHAT_MODEL=gpt-oss:20b-cloud
+    OLLAMA_CLOUD_BASE_URL=https://ollama.com
+    OLLAMA_API_KEY=your_ollama_cloud_api_key
+    OLLAMA_EMBED_URL=http://ollama:11434/api/embed
+    OLLAMA_EMBED_MODEL=nomic-embed-text
+    OLLAMA_TEMPERATURE=0.2
+    OLLAMA_KEEP_ALIVE=30m
+    OLLAMA_THINK=low
+    OLLAMA_ENABLE_FALLBACK=false
+    ```
+  </Tab>
+  <Tab title="Hybrid (auto)">
+    Use `auto` mode: cloud models route to Ollama Cloud, local models stay on-premise. Fallback to local if cloud is unavailable.
+
+    ```bash
+    OLLAMA_PROVIDER=auto
+    OLLAMA_CHAT_MODEL=gpt-oss:20b-cloud
+    OLLAMA_CLOUD_BASE_URL=https://ollama.com
+    OLLAMA_API_KEY=your_ollama_cloud_api_key
+    OLLAMA_LOCAL_BASE_URL=http://ollama:11434
+    OLLAMA_EMBED_URL=http://ollama:11434/api/embed
+    OLLAMA_EMBED_MODEL=nomic-embed-text
+    OLLAMA_TEMPERATURE=0.2
+    OLLAMA_KEEP_ALIVE=30m
+    OLLAMA_THINK=low
+    OLLAMA_ENABLE_FALLBACK=true
+    OLLAMA_FALLBACK_MODEL=qwen3.5:9b
+    OLLAMA_FALLBACK_PROVIDER=local
+    OLLAMA_FALLBACK_THINK=false
+    ```
+  </Tab>
+</Tabs>

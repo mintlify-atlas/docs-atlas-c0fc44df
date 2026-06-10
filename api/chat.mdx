@@ -1,0 +1,226 @@
+---
+title: "Chat API: RAG-Powered Museum Guide Endpoints"
+sidebarTitle: "Chat"
+description: "Ask the RAG-powered museum guide about any species via POST /api/chat (JSON) or POST /api/chat_stream (streaming). Login optional for the basic endpoint."
+---
+
+BioScan Museo exposes two chat endpoints that let visitors ask natural-language questions about any species in the collection. Both endpoints combine a structured species fact-sheet from the database, a vector-search pass over museum documents (ChromaDB), and an Ollama-powered LLM. The non-streaming `/api/chat` endpoint is stateless and requires no login; the streaming `/api/chat_stream` endpoint is session-aware, personalises answers with the visitor's tour history, and persists each exchange as a `ChatTurn` record. A third endpoint, `/api/especies/comparar/analysis`, generates a side-by-side taxonomic analysis for any two related species.
+
+---
+
+## POST /api/chat
+
+Send a single question about a species and receive a complete plain-text answer in one JSON response. The endpoint resolves question scope (`specimen`, `general`, or `mixed`) via `classify_question_scope()` in `rag.py` and builds a structured context with `build_structured_context()` before querying Ollama. If the user is authenticated, recent visit history is included in the context via `build_tour_memory_context()`.
+
+**Authentication:** None required. When the caller is authenticated, the response is enriched with personalised tour context.
+
+### Request body
+
+<ParamField body="species_id" type="string" required>
+  The internal species ID (same as `qr_id`). Must match `^[a-z0-9-_]+$`. Sanitised server-side by `sanitize_id()` and validated against `ID_RE`.
+</ParamField>
+
+<ParamField body="message" type="string" required>
+  The visitor's question. Must be a non-empty string. Leading/trailing whitespace is stripped.
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` on success, `false` on any error.
+</ResponseField>
+
+<ResponseField name="answer" type="string">
+  The LLM-generated plain-text answer. Present only when `ok` is `true`.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Human-readable error description. Present only when `ok` is `false`.
+</ResponseField>
+
+### HTTP status codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | Success — `answer` is populated. |
+| `400` | `species_id` failed validation or `message` is empty. |
+| `404` | No species found for the given `species_id`. |
+| `500` | LLM call failed — `error` contains the exception message. |
+
+### Example
+
+```bash
+curl -s -X POST https://your-museum.example.com/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "species_id": "condor-001",
+    "message": "¿Qué come el cóndor andino?"
+  }'
+```
+
+```json
+{
+  "ok": true,
+  "answer": "El cóndor andino es un ave carroñera. Su dieta se basa exclusivamente en animales muertos, principalmente mamíferos grandes como llamas, vacas y caballos. Esta especialización le permite recorrer grandes distancias aprovechando corrientes térmicas para encontrar carroña."
+}
+```
+
+---
+
+## POST /api/chat\_stream
+
+Same RAG pipeline as `/api/chat`, but streams Ollama's response token-by-token as a plain-text `text/plain` HTTP stream. This endpoint is session-aware: it reads the last exchange from `ChatTurn` to handle short follow-up questions (e.g., "¿por qué?"), builds a personalised tour-memory block with `build_tour_memory_context()`, and saves the completed exchange back to `ChatTurn` once streaming finishes.
+
+Before reaching the LLM, the endpoint checks `maybe_build_direct_chat_answer()`. If the question matches a known pattern — such as asking how many species the museum has or requesting a comparison with previously visited species — a direct answer is returned immediately without calling Ollama.
+
+**Authentication:** Login required. Returns HTTP `401` with the plain-text body `ERROR: login requerido` if the caller is not authenticated.
+
+### Request body
+
+<ParamField body="species_id" type="string" required>
+  The target species ID. Sanitised and validated against `^[a-z0-9-_]+$` (same rules as `/api/chat`).
+</ParamField>
+
+<ParamField body="message" type="string" required>
+  The visitor's question. Must be a non-empty string.
+</ParamField>
+
+### Response
+
+On success the endpoint returns `200 OK` with `Content-Type: text/plain; charset=utf-8` and streams the answer in plain text chunks. There are no SSE envelopes — each chunk is raw text that can be appended directly to the UI.
+
+On error before streaming starts, the response is still `text/plain` with the appropriate HTTP status:
+
+| Code | Body prefix | Cause |
+|------|-------------|-------|
+| `400` | `ERROR: species_id inválido` | `species_id` failed the `ID_RE` check. |
+| `400` | `ERROR: mensaje vacío` | `message` was empty or missing. |
+| `401` | `ERROR: login requerido` | Caller is not authenticated. |
+| `404` | `ERROR: Especie no encontrada` | No species matched the given ID. |
+
+### curl example
+
+```bash
+curl -s -X POST https://your-museum.example.com/api/chat_stream \
+  -H "Content-Type: application/json" \
+  -H "Cookie: session=<your-session-cookie>" \
+  -d '{
+    "species_id": "condor-001",
+    "message": "¿Cómo detecta la carroña desde tan alto?"
+  }'
+```
+
+### JavaScript fetch example (ReadableStream)
+
+```js
+const resp = await fetch("/api/chat_stream", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ species_id: "condor-001", message: "¿Cómo detecta la carroña desde tan alto?" }),
+  credentials: "include",
+});
+
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+let output = "";
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const chunk = decoder.decode(value, { stream: true });
+  output += chunk;
+  // Update UI with each chunk
+  document.getElementById("chat-output").textContent = output;
+}
+```
+
+<Note>
+  The streaming endpoint persists the full conversation to the database. After the stream closes, both the visitor's message and the assistant's complete response are saved as `ChatTurn` records linked to the authenticated user and the species. The session retains the last 60 turns per user per species; older turns are pruned automatically.
+</Note>
+
+---
+
+## GET /api/especies/comparar/analysis
+
+Returns a structured JSON comparison between two taxonomically related species. The comparison is generated by Ollama using both species' structured fact-sheets. If the LLM call fails or returns unparseable JSON, the endpoint falls back to `build_basic_comparison_fallback()`, which derives differences and similarities directly from the database fields.
+
+**Authentication:** None required.
+
+### Query parameters
+
+<ParamField query="a" type="string" required>
+  The `qr_id` of the first species (species A). Sanitised and validated against `^[a-z0-9-_]+$`.
+</ParamField>
+
+<ParamField query="b" type="string" required>
+  The `qr_id` of the second species (species B). Sanitised and validated against `^[a-z0-9-_]+$`. Must be different from `a`.
+</ParamField>
+
+The two species must share the same `familia` **or** the same `orden` (case-insensitive comparison). If they do not, the endpoint returns `400`.
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` when a valid comparison was produced.
+</ResponseField>
+
+<ResponseField name="analysis" type="object">
+  The structured comparison object.
+
+  <Expandable title="analysis fields">
+    <ResponseField name="differences" type="array">
+      Up to 6 difference items, each with `title` (string) and `detail` (string).
+    </ResponseField>
+
+    <ResponseField name="similarities" type="array">
+      Up to 4 similarity items, each with `title` (string) and `detail` (string).
+    </ResponseField>
+
+    <ResponseField name="adaptation_explanation" type="string">
+      A short paragraph about morphological adaptations and shared lineage, written for general audiences.
+    </ResponseField>
+
+    <ResponseField name="visitor_message" type="string">
+      A closing sentence designed to encourage further exploration of the exhibit.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="analysis_from_llm" type="boolean">
+  `true` when the analysis was produced by the LLM, `false` when the fallback logic was used.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error description. Present only when `ok` is `false`.
+</ResponseField>
+
+### HTTP status codes
+
+| Code | Cause |
+|------|-------|
+| `200` | Comparison produced successfully. |
+| `400` | One or both species IDs are invalid, the same, not found, or not taxonomically related. |
+
+### Example
+
+```bash
+curl -s "https://your-museum.example.com/api/especies/comparar/analysis?a=condor-001&b=aguila-002"
+```
+
+```json
+{
+  "ok": true,
+  "analysis_from_llm": true,
+  "analysis": {
+    "differences": [
+      { "title": "Dieta", "detail": "El cóndor se alimenta exclusivamente de carroña; el águila caza presas vivas." },
+      { "title": "Envergadura", "detail": "El cóndor alcanza 3 m de envergadura; el águila real llega a 2.3 m." }
+    ],
+    "similarities": [
+      { "title": "Orden", "detail": "Ambas pertenecen al orden Accipitriformes, compartiendo ancestros rapaces." }
+    ],
+    "adaptation_explanation": "Ambas especies comparten un plan corporal de gran rapaz adaptado al vuelo de planeo, aunque han evolucionado estrategias de alimentación muy diferentes.",
+    "visitor_message": "Explora cómo el cóndor y el águila, parientes del cielo andino, han encontrado caminos distintos para prosperar en su entorno."
+  }
+}
+```

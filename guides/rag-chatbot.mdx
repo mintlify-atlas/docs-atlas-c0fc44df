@@ -1,0 +1,157 @@
+---
+title: "RAG Chatbot: How the AI Guide Answers Questions"
+sidebarTitle: "RAG Chatbot"
+description: "BioScan Museo's chatbot combines Ollama LLM with ChromaDB vector search and structured species data to answer visitor questions about museum exhibits."
+---
+
+BioScan Museo's AI guide answers visitor questions about each exhibit by combining three sources of information: structured species fields from the database, the visitor's personal tour history, and relevant text chunks retrieved from ChromaDB via semantic search. This Retrieval-Augmented Generation (RAG) pipeline ensures that answers stay grounded in what is actually documented about the specimen on display, rather than in general knowledge about the species.
+
+## Chat endpoints
+
+Two endpoints expose the chatbot, differing in authentication requirement and response style.
+
+| Endpoint | Method | Auth required | Response style |
+|---|---|---|---|
+| `/api/chat` | `POST` | No | JSON — full answer returned at once. |
+| `/api/chat_stream` | `POST` | Yes (login required) | `text/plain` stream via Server-Sent chunked transfer. |
+
+Both endpoints accept the same JSON request body:
+
+```json
+{
+  "species_id": "condor-001",
+  "message": "¿De dónde proviene el ejemplar del museo?"
+}
+```
+
+The non-streaming endpoint returns:
+
+```json
+{
+  "ok": true,
+  "answer": "Según la información del museo, el ejemplar fue..."
+}
+```
+
+The streaming endpoint writes raw text chunks to the response as they arrive from the LLM. The client should append chunks as they come.
+
+<Note>
+  Anonymous visitors can use `/api/chat`, but their messages are not saved to chat history, and the tour-memory context (recent visits) is omitted from the prompt.
+</Note>
+
+## Question scope classification
+
+Before building the LLM prompt, `classify_question_scope()` in `rag.py` classifies the visitor's question into one of three scopes:
+
+| Scope | Meaning | Triggered when |
+|---|---|---|
+| `specimen` | The visitor is asking about the physical exhibit piece. | Specimen-specific keywords match more than or equal to general keywords. |
+| `general` | The visitor is asking about the species in general. | Only general keywords match. |
+| `mixed` | The question combines both, or neither keyword set matches. | Default when scope is ambiguous. |
+
+The two keyword sets used for matching are:
+
+**Specimen terms** (`SPECIMEN_QUESTION_TERMS`): `este espécimen`, `este ejemplar`, `ejemplar`, `pieza`, `pieza expuesta`, `pieza exhibida`, `expuesto`, `exhibido`, `museo`, `vitrina`, `colección`, `sala`, `procedencia`, `origen`, `de dónde viene`, `donde fue encontrado`, `hallado`, `recolectado`, `colectado`, `capturado`, `donado`, `ingresó al museo`, `registro`, `inventario`, `catalogado`, `localidad`, `sitio`
+
+**General terms** (`GENERAL_QUESTION_TERMS`): `hábitat`, `habitat`, `dieta`, `qué come`, `come`, `distribución`, `dónde vive`, `vive`, `familia`, `orden`, `reproducción`, `longevidad`, `mide`, `peso`, `envergadura`, `características`, `ecología`, `comportamiento`, `estado de conservación`, `amenazas`, `curiosidades`
+
+The scope is passed through the entire pipeline and influences both the structured context content and the ChromaDB retrieval scoring.
+
+## Chat request pipeline
+
+The following steps describe what happens during a single chat request (streaming endpoint).
+
+<Steps>
+  <Step title="Validate input and load species">
+    The `species_id` is sanitized and validated against the pattern `^[a-z0-9-_]+$`. The `Species` record is loaded from the database. Invalid IDs or missing species return a `400` or `404` error before anything else runs.
+  </Step>
+  <Step title="Check for direct-answer shortcuts">
+    `maybe_build_direct_chat_answer()` is called first. If the question matches a museum-count pattern (e.g. *¿cuántos animales hay?*) or a tour-relationship pattern (e.g. *¿se parece a alguno que visité?*), the answer is built from database queries alone — no LLM call is made. The direct answer is streamed and saved to chat history.
+  </Step>
+  <Step title="Classify question scope">
+    `classify_question_scope()` inspects the visitor's message and returns `specimen`, `general`, or `mixed`. The scope is used in steps 4 and 5.
+  </Step>
+  <Step title="Build structured context">
+    `build_structured_context(user_id, species, question_scope)` assembles a text block from the species database fields. For `specimen` scope, it includes a caution note telling the LLM not to invent provenance from general distribution data. For `general` and `mixed` scope, it includes `zonas`, `habitat`, `dieta`, `descripcion`, and `curiosidades`.
+  </Step>
+  <Step title="Build tour memory context">
+    `build_tour_memory_context(user_id, species, limit=8)` constructs a personalized block listing the total species count in the museum, the user's unique visit count, and their last 8 visited species with taxonomic relationships to the current exhibit.
+  </Step>
+  <Step title="Retrieve RAG chunks from ChromaDB">
+    `VectorStore.query_species(species_id, message, k=5, question_scope=scope)` queries the ChromaDB collection for the top 5 most relevant chunks. The query uses multiple variants of the user's message to improve recall, then re-ranks results using a scoring function that boosts specimen-specific chunks when the scope is `specimen` and penalizes them when the scope is `general`.
+  </Step>
+  <Step title="Format RAG context">
+    `format_museum_rag_context(chunks)` formats the retrieved chunks with numbered source labels (e.g. `[1] Fuente: nota curatorial`).
+  </Step>
+  <Step title="Assemble messages and stream">
+    A system prompt enforcing Spanish-language, scope-aware response rules is combined with the full context (structured + tour + RAG). The message list is sent to the `LLMClient`. Token chunks are yielded to the HTTP response as they arrive.
+  </Step>
+  <Step title="Save to chat history">
+    Once the full response is assembled, `save_chat_turns()` persists the user message and assistant response as `ChatTurn` rows. The history is pruned to the last 60 turns per user+species pair.
+  </Step>
+</Steps>
+
+## Chat history
+
+Chat history is stored in the `ChatTurn` model, scoped by `user_id` and `species_id`.
+
+- The last **10** turns are loaded and passed as prior context on each request.
+- History is pruned to a maximum of **60** turns per user+species pair after every save.
+- Only the most recent user question and assistant answer pair from prior history is surfaced to the LLM as a short memory note, preventing full history replay.
+
+<Note>
+  Chat history is only stored for authenticated users. Anonymous requests to `/api/chat` are stateless — no history is read or written.
+</Note>
+
+## Vector store and chunking
+
+Museum text is chunked and embedded before storage in ChromaDB. The chunking parameters are:
+
+| Parameter | Value |
+|---|---|
+| `chunk_size` | `850` characters |
+| `overlap` | `160` characters |
+| Boundary detection | Double newline, then `. `, `; `, `: ` |
+
+Chunks are embedded using the model configured in `OLLAMA_EMBED_MODEL` (default: `nomic-embed-text`) via `POST /api/embed` on the Ollama server at `OLLAMA_EMBED_URL`.
+
+Two source types are indexed per species:
+- **`museo_text`** — the `museo_info` field from the Species record, labelled *nota curatorial*.
+- **`museo_doc`** — extracted text from each `MuseumDoc` attached to the species, labelled with the original file name.
+
+## Re-indexing species
+
+Re-indexing rebuilds all ChromaDB chunks for a species from the current `museo_info` field and all attached `MuseumDoc` records.
+
+**From the admin panel:**
+
+```
+POST /admin/especies/<species_id>/reindex
+```
+
+**From the CLI (all species):**
+
+```bash
+flask reindex-all
+```
+
+The CLI processes every species in alphabetical order and prints a success/failure summary. Use it after bulk imports or after changing the embedding model.
+
+## LLM configuration
+
+The `LLMClient` reads all settings from environment variables.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_CHAT_MODEL` | `llama3.1:8b` | Primary chat model. Cloud models end with `:cloud` or `-cloud`. |
+| `OLLAMA_LOCAL_BASE_URL` | `http://127.0.0.1:11434` | Local Ollama instance URL. |
+| `OLLAMA_CLOUD_BASE_URL` | `https://ollama.com` | Ollama Cloud base URL. |
+| `OLLAMA_PROVIDER` | `auto` | Force `local` or `cloud`, or let the model name decide. |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model used by the vector store. |
+| `OLLAMA_TEMPERATURE` | `0.2` | Sampling temperature for chat completions. |
+| `OLLAMA_ENABLE_FALLBACK` | `true` | Whether to retry with a fallback model on primary failure. |
+| `OLLAMA_FALLBACK_MODEL` | *(empty)* | Model name to use if the primary fails. |
+
+<Warning>
+  If both the primary model and the fallback model fail, the streaming endpoint yields an inline `[ERROR]` token rather than silently dropping the response. Monitor your Ollama server logs when this occurs.
+</Warning>

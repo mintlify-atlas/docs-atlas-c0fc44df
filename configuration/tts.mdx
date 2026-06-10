@@ -1,0 +1,139 @@
+---
+title: "Configure the BioScan TTS Voice Service"
+sidebarTitle: "TTS Settings"
+description: "Configure BioScan Museo's Edge TTS sidecar: select voice, speech rate, volume, audio cache directory, and integrate it with the Flask app via shared keys."
+---
+
+BioScan Museo includes a standalone FastAPI voice service — the TTS sidecar — that pre-generates MP3 narrations for every species in the museum catalog. When an admin saves or updates a species, the Flask application calls the sidecar's internal sync endpoint to regenerate all narration styles. Physical devices such as ESP32 scanners then fetch the pre-built audio directly via the sidecar's public URL.
+
+The TTS sidecar lives in the `Servertts/` subdirectory and reads its own `.env` file (copied from `Servertts/.env.example`). Several variables must also be mirrored in the main application `.env` so the two services can authenticate with each other.
+
+---
+
+## Voice settings
+
+These three variables control every audio file the sidecar generates. Changing any of them does **not** automatically regenerate existing cached files — you must trigger a re-sync of each species to pick up the new voice or rate.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `EDGE_TTS_VOICE` | string | `es-CO-GonzaloNeural` | The Microsoft Edge TTS voice used for all narrations. Format is `locale-VoiceName`, e.g. `es-MX-DaliaNeural` or `es-ES-AlvaroNeural`. |
+| `EDGE_TTS_RATE` | string | `+0%` | Speech rate offset from the voice's natural speed. Use positive values to speed up (`+20%`) or negative to slow down (`-15%`). |
+| `EDGE_TTS_VOLUME` | string | `+0%` | Volume offset. For example, `+10%` raises the volume slightly above the voice's default. |
+
+### Choosing a different voice
+
+Any voice available in Microsoft Edge TTS can be used. The identifier format is always `{locale}-{VoiceName}Neural`:
+
+```
+es-CO-GonzaloNeural   (default — Colombian Spanish, male)
+es-MX-DaliaNeural     (Mexican Spanish, female)
+es-ES-AlvaroNeural    (Spain Spanish, male)
+es-AR-TomasNeural     (Argentine Spanish, male)
+es-CL-CatalinaNeural  (Chilean Spanish, female)
+```
+
+To list all available voices, run the following in any Python environment where `edge-tts` is installed:
+
+```bash
+python -m edge_tts --list-voices | grep "^es-"
+```
+
+---
+
+## Storage
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `AUDIO_CACHE_DIR` | string | `./cache_audio` | Root directory where all pre-generated audio is stored. Relative paths are resolved from the `Servertts/` directory. Can be set to an absolute path (e.g. `/data/tts_cache`) for Docker volume mounts. |
+| `DEBUG_FRAMES_DIR` | string | `./debug_frames` | Directory where incoming camera frames are saved for debugging QR detection. Relative paths are resolved the same way as `AUDIO_CACHE_DIR`. This directory can grow large in active deployments — point it to a volume with adequate space or implement periodic cleanup. |
+
+<Tip>
+Species audio files are stored at `{AUDIO_CACHE_DIR}/species/{species_id}/{style}.mp3`. For example, a species with ID `condor-001` will have three pre-generated files:
+
+```
+cache_audio/species/condor-001/ficha.mp3
+cache_audio/species/condor-001/narrativo.mp3
+cache_audio/species/condor-001/corto.mp3
+```
+
+Mount `AUDIO_CACHE_DIR` as a named Docker volume so audio files persist across container restarts and upgrades.
+</Tip>
+
+---
+
+## Integration with the Flask app
+
+These variables wire the TTS sidecar into the main BioScan Museo application.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MUSEO_API_BASE_URL` | string | `http://127.0.0.1:5000` | Base URL of the main Flask application, as seen from the TTS sidecar. Used in the TTS service when it needs to call back to the Flask API. |
+| `MUSEO_API_KEY` | string | — | Shared secret the TTS sidecar uses to authenticate requests arriving from the Flask app. **Must equal `MUSEO_TTS_SHARED_KEY` in the main `.env`.** The Flask app sends this value in the `X-API-Key` header on every `/internal/species/sync` and `/internal/species/delete` call. |
+| `MUSEO_TTS_PUBLIC_BASE_URL` | string | — | The public HTTPS URL of this TTS service. Also set in the main Flask `.env` so the app knows the public address of the sidecar. In ngrok deployments, this is the ngrok-tts tunnel URL. |
+| `TTS_API_KEY` | string | — | Key required by external callers — such as ESP32 devices — to access the `/tts/by-qr/`, `/tts/from-frame/`, and `/qr/resolve-frame/` endpoints. Also required as the `key` query parameter on WebSocket connections to `/ws/qr-stream`. |
+
+<Warning>
+`MUSEO_API_KEY` (in the TTS sidecar `.env`) and `MUSEO_TTS_SHARED_KEY` (in the main Flask `.env`) must be set to the **same value**. If they differ, every species save or delete from the admin panel will fail with a `401 unauthorized` error from the TTS service.
+</Warning>
+
+---
+
+## Narration styles
+
+Every species has three pre-generated narration styles. The style is selected at request time via the `style` query parameter (e.g. `GET /tts/by-qr/condor-001?style=narrativo&key=...`). All three files are generated together whenever a species is synced.
+
+The text for each style is produced by `build_text_from_species()` in `main.py`:
+
+### `ficha` (default)
+
+A structured, fact-sheet style narration. The intro sentence combines common name and scientific name: *"Este animal llamado Cóndor Andino tiene como nombre científico Vultur gryphus."* It is followed by the description, habitat, diet, and up to three curiosities.
+
+Use this style on physical kiosks and QR-triggered devices where visitors expect a complete but neutral summary.
+
+### `narrativo`
+
+A conversational, storytelling style. The intro uses *"Te cuento sobre…"* to engage the visitor. The same fields are present (scientific name, description, habitat, diet, curiosities), but the sentence structure is warmer and more inviting.
+
+Use this style for audio guides and self-guided tour apps where a friendly narrator voice is preferred.
+
+### `corto`
+
+A brief summary. Only the common name, scientific name, description, habitat, diet, and a single curiosity are included — one sentence per field, no extra framing. The result is typically 3–5 sentences long.
+
+Use this style for short attention spans, lobby screens, or situations where background audio must not be too long.
+
+---
+
+## Example configuration
+
+The following `.env` for the TTS sidecar matches a Docker Compose deployment where the Flask app runs on the same host.
+
+```bash
+# Servertts/.env
+
+# Integration
+MUSEO_API_BASE_URL=http://app:5000
+MUSEO_API_KEY=pon_aqui_una_clave_compartida_tts
+MUSEO_TTS_PUBLIC_BASE_URL=https://abc123.ngrok-free.app
+
+# Device authentication
+TTS_API_KEY=clave_para_la_esp32
+
+# Voice
+EDGE_TTS_VOICE=es-CO-GonzaloNeural
+EDGE_TTS_RATE=+0%
+EDGE_TTS_VOLUME=+0%
+
+# Storage
+AUDIO_CACHE_DIR=./cache_audio
+```
+
+And the corresponding variables that must be set in the **main** `/.env`:
+
+```bash
+# Main .env (must mirror the TTS service values)
+MUSEO_TTS_SHARED_KEY=pon_aqui_una_clave_compartida_tts
+MUSEO_TTS_INTERNAL_BASE_URL=http://servertts:8010
+MUSEO_TTS_PUBLIC_BASE_URL=https://abc123.ngrok-free.app
+TTS_API_KEY=clave_para_la_esp32
+```

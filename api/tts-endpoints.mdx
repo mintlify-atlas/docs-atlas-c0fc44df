@@ -1,0 +1,516 @@
+---
+title: "TTS Service HTTP Endpoints Reference"
+sidebarTitle: "TTS Endpoints"
+description: "Full HTTP endpoint reference for BioScan Museo TTS: sync species audio, stream MP3 by QR ID, resolve QR codes from JPEG frames, and generate ad-hoc speech."
+---
+
+All HTTP endpoints are served by the FastAPI sidecar on port **8010**. Public endpoints (`/tts/*`, `/qr/*`) require the `?key=<TTS_API_KEY>` query parameter. Internal endpoints (`/internal/*`) require the `X-API-Key: <MUSEO_API_KEY>` header. Debug endpoints require no authentication.
+
+---
+
+## GET /health
+
+Returns the service status and the configured Edge TTS voice. No authentication required. Use this endpoint for readiness probes in Docker Compose or a load balancer.
+
+```bash
+curl http://localhost:8010/health
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "ok": true,
+  "service": "museo-tts",
+  "voice": "es-CO-GonzaloNeural"
+}
+```
+
+<ResponseField name="ok" type="boolean">
+  Always `true` when the service is running.
+</ResponseField>
+
+<ResponseField name="service" type="string">
+  Fixed identifier string `"museo-tts"`.
+</ResponseField>
+
+<ResponseField name="voice" type="string">
+  Active Edge TTS voice, as set by `EDGE_TTS_VOICE` (default: `es-CO-GonzaloNeural`).
+</ResponseField>
+
+---
+
+## POST /internal/species/sync
+
+Pre-generates all three narration-style MP3 files (`ficha`, `narrativo`, `corto`) for a species and registers its QR mapping. Called by the Flask app after every species create or edit operation.
+
+**Authentication:** `X-API-Key: <MUSEO_API_KEY>` header.
+
+```bash
+curl -X POST http://localhost:8010/internal/species/sync \
+  -H "X-API-Key: YOUR_MUSEO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "species_id": "condor-001",
+    "qr_id": "qr-condor-001",
+    "common_name": "Cóndor Andino",
+    "scientific_name": "Vultur gryphus",
+    "description": "El cóndor andino es el ave voladora más grande del mundo.",
+    "habitat": "los Andes de Sudamérica",
+    "diet": "carroña",
+    "curiosities": ["Puede planear más de 5 horas sin batir las alas"]
+  }'
+```
+
+### Request Body — `SpeciesSyncRequest`
+
+<ParamField body="species_id" type="string" required>
+  Canonical identifier for the species. Must match `^[A-Za-z0-9_-]+$`. Used as the audio directory name under `AUDIO_CACHE_DIR/species/`.
+</ParamField>
+
+<ParamField body="qr_id" type="string | null">
+  QR code value printed on the physical exhibit label. If `null`, defaults to `species_id` internally. Must match `^[A-Za-z0-9_-]+$`.
+</ParamField>
+
+<ParamField body="common_name" type="string | null">
+  Common name of the species (e.g., `"Cóndor Andino"`).
+</ParamField>
+
+<ParamField body="scientific_name" type="string | null">
+  Scientific/Latin name (e.g., `"Vultur gryphus"`).
+</ParamField>
+
+<ParamField body="description" type="string | null">
+  Main description text for the species.
+</ParamField>
+
+<ParamField body="habitat" type="string | null">
+  Natural habitat description.
+</ParamField>
+
+<ParamField body="diet" type="string | null">
+  Diet or feeding description.
+</ParamField>
+
+<ParamField body="curiosities" type="any">
+  Interesting facts. Accepts a string, a JSON-encoded string, a list of strings, or a dict of values. All formats are normalised into a list of sentences before TTS synthesis.
+</ParamField>
+
+**Response `200 OK`**
+
+```json
+{
+  "ok": true,
+  "species_id": "condor-001",
+  "qr_id": "qr-condor-001",
+  "generated_styles": ["ficha", "narrativo", "corto"],
+  "files": {
+    "ficha":     "/app/cache_audio/species/condor-001/ficha.mp3",
+    "narrativo": "/app/cache_audio/species/condor-001/narrativo.mp3",
+    "corto":     "/app/cache_audio/species/condor-001/corto.mp3"
+  }
+}
+```
+
+<ResponseField name="ok" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="species_id" type="string">
+  Canonical species ID as stored.
+</ResponseField>
+
+<ResponseField name="qr_id" type="string">
+  QR ID registered in `_qr_index.json`.
+</ResponseField>
+
+<ResponseField name="generated_styles" type="string[]">
+  List of styles for which MP3 files were generated: `["ficha", "narrativo", "corto"]`.
+</ResponseField>
+
+<ResponseField name="files" type="object">
+  Map of `style → absolute file path` for each generated MP3.
+</ResponseField>
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `invalid_species_id` | `species_id` fails regex or is empty |
+| `400` | `invalid_qr_id` | `qr_id` fails regex |
+| `401` | `unauthorized` | Missing or wrong `X-API-Key` header |
+| `422` | `empty_tts_text_<style>` | All species fields empty; nothing to synthesise |
+| `500` | `tts_generation_error: …` | Edge TTS call failed |
+
+---
+
+## POST /internal/species/delete
+
+Removes a species' audio directory and clears all its QR index entries. Called by the Flask app when a species is deleted.
+
+**Authentication:** `X-API-Key: <MUSEO_API_KEY>` header.
+
+```bash
+curl -X POST http://localhost:8010/internal/species/delete \
+  -H "X-API-Key: YOUR_MUSEO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"species_id": "condor-001", "qr_id": "qr-condor-001"}'
+```
+
+### Request Body — `SpeciesDeleteRequest`
+
+<ParamField body="species_id" type="string" required>
+  Species to delete. Must be non-empty.
+</ParamField>
+
+<ParamField body="qr_id" type="string | null">
+  Optional explicit QR ID to also remove from the index. If `null`, only entries pointing to `species_id` are removed.
+</ParamField>
+
+**Response `200 OK`**
+
+```json
+{
+  "ok": true,
+  "species_id": "condor-001"
+}
+```
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `invalid_species_id` | `species_id` is blank after sanitisation |
+| `401` | `unauthorized` | Missing or wrong `X-API-Key` header |
+
+---
+
+## GET /tts/by-qr/{qr_id}
+
+Serves a pre-generated MP3 file for the species associated with the given QR ID. The audio must have been pre-generated by `/internal/species/sync` beforehand; this endpoint does **not** synthesise audio on the fly.
+
+**Authentication:** `?key=<TTS_API_KEY>` query parameter.
+
+```bash
+curl -o condor.mp3 \
+  "http://localhost:8010/tts/by-qr/qr-condor-001?key=YOUR_TTS_API_KEY&style=narrativo"
+```
+
+### Parameters
+
+<ParamField path="qr_id" type="string" required>
+  The QR code value from the exhibit label. Must match `^[A-Za-z0-9_-]+$`. Resolved through `_qr_index.json` to find the species audio directory.
+</ParamField>
+
+<ParamField query="style" type="string">
+  Narration style to serve. One of `ficha`, `narrativo`, `corto`. Defaults to `ficha`.
+</ParamField>
+
+<ParamField query="key" type="string" required>
+  Your `TTS_API_KEY`.
+</ParamField>
+
+**Response `200 OK` — `audio/mpeg`**
+
+Binary MP3 stream with the following response headers:
+
+<ResponseField name="X-TTS-QR" type="string">
+  The `qr_id` that was resolved.
+</ResponseField>
+
+<ResponseField name="X-TTS-Style" type="string">
+  The narration style that was served (`ficha`, `narrativo`, or `corto`).
+</ResponseField>
+
+<ResponseField name="X-TTS-Species" type="string">
+  The resolved `species_id` whose audio directory was used.
+</ResponseField>
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `invalid_qr_id` | `qr_id` path segment fails regex |
+| `400` | `invalid_style` | `style` is not one of the three allowed values |
+| `401` | `unauthorized` | Missing or wrong `key` param |
+| `404` | `species_audio_not_found` | QR ID not in index and no matching species directory |
+| `404` | `pregenerated_audio_not_found` | Species exists but MP3 for requested style not yet generated |
+
+---
+
+## POST /tts/from-text
+
+Synthesises speech from arbitrary text on demand using Edge TTS. The result is returned directly and **not cached**. Useful for prototyping or generating one-off audio clips.
+
+**Authentication:** `?key=<TTS_API_KEY>` query parameter.
+
+```bash
+curl -X POST "http://localhost:8010/tts/from-text?key=YOUR_TTS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Bienvenidos al Museo BioScan."}' \
+  -o output.mp3
+```
+
+### Request Body — `TextToTTSRequest`
+
+<ParamField body="text" type="string" required>
+  Plain text to synthesise. HTML tags are stripped automatically. Must be non-empty after cleaning.
+</ParamField>
+
+**Response `200 OK` — `audio/mpeg`**
+
+Binary MP3 stream with the following response headers:
+
+<ResponseField name="X-TTS-Voice" type="string">
+  Edge TTS voice used for synthesis (from `EDGE_TTS_VOICE`).
+</ResponseField>
+
+<ResponseField name="X-TTS-Text-Length" type="string">
+  Length in characters of the cleaned input text.
+</ResponseField>
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `empty_text` | `text` is blank after HTML-tag stripping |
+| `401` | `unauthorized` | Missing or wrong `key` param |
+| `500` | `tts_generation_error: …` | Edge TTS synthesis call failed |
+
+---
+
+## POST /qr/resolve-frame
+
+Accepts a raw JPEG image, runs QR detection, and returns the matching species text and audio URL. Use this when you need the species metadata **without** immediately streaming audio — for example to display species information in a UI before playing sound.
+
+**Authentication:** `?key=<TTS_API_KEY>` query parameter.
+
+The detection pipeline tries four strategies in sequence, stopping at the first success:
+
+1. **Color** — direct detection on the original BGR image
+2. **Grayscale** — convert to single-channel and retry
+3. **Otsu threshold** — binarise with Otsu's method and retry
+4. **2× upscale** — resize grayscale image by 2× (cubic interpolation) and retry
+
+```bash
+curl -X POST "http://localhost:8010/qr/resolve-frame?key=YOUR_TTS_API_KEY&style=ficha" \
+  --data-binary "@frame.jpg" \
+  -H "Content-Type: image/jpeg"
+```
+
+### Parameters
+
+<ParamField query="style" type="string">
+  Narration style for the returned `text` field. One of `ficha`, `narrativo`, `corto`. Defaults to `ficha`.
+</ParamField>
+
+<ParamField query="key" type="string" required>
+  Your `TTS_API_KEY`.
+</ParamField>
+
+**Request body:** Raw JPEG bytes (`Content-Type: image/jpeg`).
+
+**Response `200 OK` — QR found**
+
+```json
+{
+  "found": true,
+  "qr_id": "qr-condor-001",
+  "species_id": "condor-001",
+  "text": "Este animal llamado Cóndor Andino tiene como nombre científico Vultur gryphus...",
+  "audio_url": "http://localhost:8010/tts/by-qr/qr-condor-001?key=YOUR_KEY&style=ficha",
+  "fields": {
+    "species_id": "condor-001",
+    "qr_id": "qr-condor-001",
+    "common_name": "Cóndor Andino",
+    "scientific_name": "Vultur gryphus",
+    "description": "El cóndor andino es el ave voladora más grande del mundo.",
+    "habitat": "los Andes de Sudamérica",
+    "diet": "carroña",
+    "curiosities": ["Puede planear más de 5 horas sin batir las alas"]
+  },
+  "decode_method": "color",
+  "debug_frame_url": "/debug/last-frame"
+}
+```
+
+<ResponseField name="found" type="boolean">
+  `true` when a valid QR code was detected and the species was resolved.
+</ResponseField>
+
+<ResponseField name="qr_id" type="string">
+  Raw QR code string decoded from the image.
+</ResponseField>
+
+<ResponseField name="species_id" type="string">
+  Canonical species ID resolved from the QR index.
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  Narration text built from species fields in the requested `style`.
+</ResponseField>
+
+<ResponseField name="audio_url" type="string">
+  Full URL to retrieve the pre-generated MP3 via `GET /tts/by-qr/{qr_id}`.
+</ResponseField>
+
+<ResponseField name="fields" type="object">
+  Cleaned and normalised species fields used to build the narration text.
+</ResponseField>
+
+<ResponseField name="decode_method" type="string">
+  Which detection strategy succeeded: `color`, `grayscale`, `threshold_otsu`, or `upscaled_gray`.
+</ResponseField>
+
+<ResponseField name="debug_frame_url" type="string">
+  Path to retrieve the saved debug frame via `/debug/last-frame`.
+</ResponseField>
+
+**Response `404` — QR not found**
+
+```json
+{
+  "found": false,
+  "error": "qr_not_found_in_frame",
+  "decode_method": "not_found",
+  "debug_frame_url": "/debug/last-frame"
+}
+```
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `empty_image` | Request body is empty |
+| `401` | `unauthorized` | Missing or wrong `key` param |
+| `404` | `qr_not_found_in_frame` | No QR code detected after all four strategies |
+
+---
+
+## POST /tts/from-frame
+
+Combines QR detection and audio delivery into a single request. Accepts a raw JPEG image, detects the QR code, and streams back the pre-generated MP3 for the identified species. Ideal for embedded clients (e.g., ESP32-CAM) that need audio with the fewest round-trips.
+
+**Authentication:** `?key=<TTS_API_KEY>` query parameter.
+
+```bash
+curl -X POST "http://localhost:8010/tts/from-frame?key=YOUR_TTS_API_KEY&style=corto" \
+  --data-binary "@frame.jpg" \
+  -H "Content-Type: image/jpeg" \
+  -o audio.mp3
+```
+
+### Parameters
+
+<ParamField query="style" type="string">
+  Narration style for the served MP3. One of `ficha`, `narrativo`, `corto`. Defaults to `ficha`.
+</ParamField>
+
+<ParamField query="key" type="string" required>
+  Your `TTS_API_KEY`.
+</ParamField>
+
+**Request body:** Raw JPEG bytes (`Content-Type: image/jpeg`).
+
+**Response `200 OK` — `audio/mpeg`**
+
+Binary MP3 stream. Response headers are identical to `GET /tts/by-qr/{qr_id}`:
+
+<ResponseField name="X-TTS-QR" type="string">
+  Detected QR ID.
+</ResponseField>
+
+<ResponseField name="X-TTS-Style" type="string">
+  Narration style served.
+</ResponseField>
+
+<ResponseField name="X-TTS-Species" type="string">
+  Resolved species ID.
+</ResponseField>
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `400` | `empty_image` | Request body is empty |
+| `401` | `unauthorized` | Missing or wrong `key` param |
+| `404` | `qr_not_found_in_frame` | No QR code detected in image |
+| `404` | `pregenerated_audio_not_found` | QR resolved but MP3 for style not generated yet |
+
+---
+
+## GET /debug/view
+
+Renders a browser-viewable HTML page displaying the last received JPEG frame alongside the current `LAST_DEBUG_INFO` status JSON. The page auto-refreshes every **3 seconds** via `<meta http-equiv="refresh">`. No authentication required.
+
+```bash
+# Open in browser
+open http://localhost:8010/debug/view
+```
+
+---
+
+## GET /debug/last-frame
+
+Returns the most recently received JPEG frame saved to `DEBUG_FRAMES_DIR/last_frame.jpg`. No authentication required.
+
+```bash
+curl http://localhost:8010/debug/last-frame -o last.jpg
+```
+
+**Response `200 OK` — `image/jpeg`**
+
+Raw JPEG bytes of the last processed frame.
+
+**Errors**
+
+| Status | Detail | Cause |
+|---|---|---|
+| `404` | `no_debug_frame_yet` | No frame has been received since service start |
+
+---
+
+## GET /debug/last-status
+
+Returns the in-memory debug state as JSON, reflecting the outcome of the most recent frame processed by `/qr/resolve-frame`, `/tts/from-frame`, or the WebSocket stream. No authentication required.
+
+```bash
+curl http://localhost:8010/debug/last-status
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "last_qr_text": "qr-condor-001",
+  "last_decode_method": "grayscale",
+  "last_found": true,
+  "last_error": "",
+  "last_saved_frame": "/app/debug_frames/incoming_1712345678.jpg",
+  "last_timestamp": 1712345678
+}
+```
+
+<ResponseField name="last_qr_text" type="string">
+  QR code string decoded from the last frame, or `""` if none was found.
+</ResponseField>
+
+<ResponseField name="last_decode_method" type="string">
+  Detection strategy that last ran: `color`, `grayscale`, `threshold_otsu`, `upscaled_gray`, or `not_found`.
+</ResponseField>
+
+<ResponseField name="last_found" type="boolean">
+  `true` if the last frame yielded a valid QR code.
+</ResponseField>
+
+<ResponseField name="last_error" type="string">
+  Error string from the last failed detection, e.g., `"qr_not_found_in_frame"`, or `""` on success.
+</ResponseField>
+
+<ResponseField name="last_saved_frame" type="string">
+  Absolute path to the last debug frame file written to `DEBUG_FRAMES_DIR`.
+</ResponseField>
+
+<ResponseField name="last_timestamp" type="integer">
+  Unix timestamp (seconds) of the last processed frame.
+</ResponseField>

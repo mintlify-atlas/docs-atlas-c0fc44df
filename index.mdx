@@ -1,20 +1,72 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "BioScan Museo: AI-Powered Museum Guide for Bird Exhibits"
+sidebarTitle: "Home"
+description: "BioScan Museo is an AI-powered museum guide combining QR scanning, RAG chatbot, and text-to-speech narration to deliver interactive species experiences."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+BioScan Museo turns a museum's Birds Hall into an interactive digital experience. Visitors scan QR codes to pull up rich species profiles, ask questions to an AI guide powered by a local LLM with Retrieval-Augmented Generation (RAG), and hear narrated descriptions through a text-to-speech sidecar. The platform is self-hosted and runs on low-power hardware such as an Orange Pi 4 Pro using Docker Compose.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Understand the architecture, components, and how everything fits together.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get BioScan Museo running locally in minutes with Docker Compose.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/environment">
+    Configure environment variables, the LLM backend, and TTS voice settings.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/chat">
+    Explore the chat, species, metrics, and TTS service endpoints.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What BioScan Museo Does
+
+BioScan Museo is a full-stack platform with two services — a Flask web app and a FastAPI TTS sidecar — that together provide:
+
+<CardGroup cols={2}>
+  <Card title="QR Code Scanning" icon="qrcode">
+    Each exhibit has a unique QR code. Scanning it logs the visit and opens the species detail page with image, taxonomy, and habitat info.
+  </Card>
+  <Card title="RAG Chatbot" icon="robot">
+    Visitors chat with an AI guide that answers questions using Ollama LLM plus ChromaDB vector search over museum documents.
+  </Card>
+  <Card title="Text-to-Speech" icon="volume-high">
+    The TTS sidecar pre-generates MP3 narrations for every species and serves them on demand via HTTP or real-time WebSocket.
+  </Card>
+  <Card title="Admin Panel" icon="gear">
+    Admins manage species, upload museum documents, customize QR styles, and view scan metrics and audit logs.
+  </Card>
+</CardGroup>
+
+## Get Up and Running
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/GustavoNightmare/InformacionMuseo.git
+    cd InformacionMuseo
+    ```
+  </Step>
+  <Step title="Configure environment variables">
+    Copy the example env file and fill in your credentials:
+    ```bash
+    cp .env.example .env
+    ```
+    At minimum, set `SECRET_KEY`, `ADMIN_USER`, `ADMIN_PASS`, `MUSEO_TTS_SHARED_KEY`, and your Ollama model settings.
+  </Step>
+  <Step title="Start all services">
+    ```bash
+    docker compose up -d --build
+    ```
+    The stack brings up `museo-app` (Flask), `ollama` (LLM), `servertts` (FastAPI TTS), and two ngrok tunnels for public HTTPS access.
+  </Step>
+  <Step title="Open the app">
+    Navigate to `http://localhost:5000`. Log in with your admin credentials and use the CLI command `flask --app app.py seed` to populate a sample species.
+  </Step>
+</Steps>
+
+<Note>
+  The first run downloads Ollama models, which can take several minutes depending on your connection and hardware. See the [Deployment guide](/deployment) for Orange Pi 4 Pro-specific tips.
+</Note>

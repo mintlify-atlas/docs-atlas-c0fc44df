@@ -1,0 +1,176 @@
+---
+title: "Species Public API Endpoints in BioScan Museo"
+sidebarTitle: "Species Pages"
+description: "Public HTML routes for the species catalogue: browse, search, view detail pages, scan QR codes, and compare two related species side-by-side."
+---
+
+These routes power the visitor-facing side of BioScan Museo. They render HTML pages rather than JSON, but their behaviour — including which data is recorded, when scan events are logged, and how visit milestones are tracked — is relevant for integrators building kiosk frontends, QR-scanning apps, or custom analytics on top of the platform. All four routes are publicly accessible without authentication, though authenticated visitors receive a richer experience.
+
+---
+
+## GET /especies
+
+Displays the full species catalogue as an HTML page. Supports a text search that filters across the QR identifier, common name, and scientific name fields.
+
+**Authentication:** None required. When the visitor is authenticated, the page additionally shows which species they have already scanned (`scanned_ids`) and the total count of their unique scans (`scanned_count`).
+
+### Query parameters
+
+<ParamField query="q" type="string">
+  Optional free-text search string. The filter is applied case-insensitively against `qr_id`, `nombre_comun`, and `nombre_cientifico` using SQL `ILIKE` (`%q%`). If omitted, all species are returned in ascending alphabetical order by common name.
+</ParamField>
+
+### Template context
+
+The following values are passed to the `especies.html` template:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `items` | `list[Species]` | Filtered list of species matching `q`, ordered by `nombre_comun` ascending. |
+| `q` | `string` | The current search string (empty if not provided). |
+| `total_count` | `int` | Total number of species in the database, regardless of the search filter. |
+| `scanned_count` | `int` | Number of distinct species the authenticated user has visited. `0` for unauthenticated visitors. |
+| `scanned_ids` | `set[str]` | Set of `species_id` values the authenticated user has scanned. Empty for unauthenticated visitors. |
+| `scan_counts` | `dict[str, int]` | Maps each `species_id` to the number of **distinct users** who have visited it (sourced from the `Visit` table). |
+
+### Example
+
+```bash
+# Browse all species
+curl https://your-museum.example.com/especies
+
+# Search for "cóndor"
+curl "https://your-museum.example.com/especies?q=c%C3%B3ndor"
+```
+
+---
+
+## GET /especie/\<qr\_id\>
+
+Renders the full detail page for a single species identified by its QR slug. This is the primary landing page for visitors who scan a physical QR code or navigate the catalogue manually.
+
+**Authentication:** None required. Authenticated visitors see additional UI elements (e.g., "already scanned" indicators, a link to the AI chat). Admins who navigate with `origin=manual` have an `viewed_admin` audit event recorded in `SpeciesAuditLog` (deduplicated within a 5-minute window).
+
+### Path parameter
+
+<ParamField path="qr_id" type="string" required>
+  The species' QR identifier. Normalised server-side by `sanitize_id()` and validated against `^[a-z0-9-_]+$`. Returns `404` if no species matches.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="origin" type="string">
+  Optional scan origin hint. Accepted values are `web` and `manual`. When provided, the server calls `record_scan_event()` and creates a `ScanEvent` record with the given origin. Has no effect if omitted or set to `qr` (QR scans are recorded by the `/scan/<qr_id>` route instead). Defaults to no scan event being recorded when visiting the detail page directly.
+</ParamField>
+
+<ParamField query="celebration" type="string">
+  When set to `"1"`, the template sets `show_celebration=True` and displays a milestone animation. This parameter is injected automatically by the `/scan/<qr_id>` redirect when the visitor has just completed their tour of all species.
+</ParamField>
+
+### Behaviour notes
+
+- `qr_id` is lowercased and stripped of any characters not in `[a-z0-9-_]` before the database lookup.
+- When `origin` is `web` or `manual`, `record_scan_event()` is called regardless of authentication status. The resulting `ScanEvent` row stores the visitor's `user_id` if they are logged in, or `NULL` if anonymous.
+- The `is_scanned` flag passed to the template is `True` only when the authenticated user has a `Visit` record for this species.
+
+### Example
+
+```bash
+# Direct detail page (no scan event)
+curl https://your-museum.example.com/especie/condor-001
+
+# Mark as web-visited (records a ScanEvent with origin=web)
+curl "https://your-museum.example.com/especie/condor-001?origin=web"
+```
+
+---
+
+## GET /scan/\<qr\_id\>
+
+The canonical QR-scan entry point. Physical QR codes in the museum encode the species' `qr_id` as the URL path. This route records the scan event, optionally records a `Visit` for authenticated users, and then redirects to the species detail page.
+
+**Authentication:** None required. Works for anonymous visitors.
+
+### Path parameter
+
+<ParamField path="qr_id" type="string" required>
+  The species' QR identifier. Normalised and validated identically to `/especie/<qr_id>`. Returns `404` if the species does not exist.
+</ParamField>
+
+### Query parameters
+
+<ParamField query="origin" type="string">
+  Optional scan origin. Normalised by `normalize_scan_origin()`. Accepted values: `qr`, `web`, `manual`. Any other value (including absent) defaults to `qr`. This value is stored in the `ScanEvent.origin` column.
+</ParamField>
+
+### Behaviour
+
+1. **Always:** `record_scan_event()` is called with the resolved species, the caller's `user_id` (or `None` if anonymous), and the normalised `origin`. A `ScanEvent` row is inserted immediately.
+2. **Authenticated only:** If no `Visit` record exists for this user+species pair, a new `Visit` is inserted.
+3. **Milestone check:** After inserting the `Visit`, the server compares the user's unique visit count against the total species count. If they match and both are greater than zero, `just_completed` is set to `True`.
+4. **Redirect:** The visitor is redirected to `/especie/<qr_id>`. If `just_completed` is `True`, the redirect includes `?celebration=1`.
+
+### Example
+
+```bash
+# QR code scan (default origin = qr)
+curl -L https://your-museum.example.com/scan/condor-001
+
+# Explicit origin
+curl -L "https://your-museum.example.com/scan/condor-001?origin=qr"
+```
+
+<Note>
+  The redirect destination is always `/especie/<qr_id>`, using the `qr_id` stored in the database (not the raw path segment), so canonicalisation is applied even if the QR code encodes an older slug.
+</Note>
+
+---
+
+## GET /especies/comparar
+
+Renders an HTML side-by-side comparison page for two species. Both species must be taxonomically related — sharing the same `familia` or the same `orden` — or the request is rejected with a flash error and a redirect to `/especies`.
+
+**Authentication:** None required.
+
+### Query parameters
+
+<ParamField query="a" type="string" required>
+  The `qr_id` of the first species. Sanitised and validated against `^[a-z0-9-_]+$`.
+</ParamField>
+
+<ParamField query="b" type="string" required>
+  The `qr_id` of the second species. Must differ from `a`.
+</ParamField>
+
+### Validation
+
+The helper `get_species_pair_for_comparison()` applies the following checks in order. On the first failing check, a flash error message is set and the visitor is redirected to `/especies`:
+
+1. Both `a` and `b` must be non-empty and match `^[a-z0-9-_]+$`.
+2. `a` and `b` must be different values.
+3. Both species must exist in the database.
+4. The species must share `familia` **or** `orden` (normalised to lowercase for comparison via `normalize_taxonomy()`). If neither matches, the error is *"Solo puedes comparar especies de la misma familia u orden."*
+
+### Template context
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `item_a` | `Species` | First species object. |
+| `item_b` | `Species` | Second species object. |
+| `same_family` | `bool` | `True` if both species share the same `familia`. |
+| `same_order` | `bool` | `True` if both species share the same `orden`. |
+| `comparison_rows` | `list[dict]` | Side-by-side field comparison built by `build_species_comparison_rows()`. Each row has `label`, `a` (value for species A), and `b` (value for species B). Fields covered: QR ID, common name, scientific name, family, order, habitat, diet, zones, description, and curiosities. |
+
+### Example
+
+```bash
+# Valid comparison — same family
+curl -L "https://your-museum.example.com/especies/comparar?a=condor-001&b=aguila-002"
+
+# Invalid — redirects to /especies with flash error
+curl -L "https://your-museum.example.com/especies/comparar?a=condor-001&b=tiburon-001"
+```
+
+<Note>
+  This HTML page loads the AI-powered analysis asynchronously via `GET /api/especies/comparar/analysis`. The two routes share the same validation logic (`get_species_pair_for_comparison()`), so any pair that passes the HTML route's validation will also be accepted by the JSON analysis endpoint.
+</Note>

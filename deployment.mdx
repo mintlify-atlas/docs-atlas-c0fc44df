@@ -1,0 +1,260 @@
+---
+title: "Deploy BioScan Museo with Docker Compose"
+sidebarTitle: "Deployment"
+description: "Deploy BioScan Museo's five-service Docker Compose stack, configure ngrok HTTPS tunnels, and tune performance for Orange Pi 4 Pro hardware."
+---
+
+BioScan Museo ships as a fully self-contained Docker Compose stack. A single build command brings up the Flask web app, a local Ollama LLM, the FastAPI TTS sidecar, and two ngrok tunnels for public HTTPS access. This guide explains each service, port mapping, volume layout, and how to tune the stack for constrained hardware like the Orange Pi 4 Pro.
+
+## Deploy the Full Stack
+
+<Steps>
+  <Step title="Prepare environment variables">
+    Copy `.env.example` to `.env` and fill in all required values before building. The minimum set needed to start the stack without errors is:
+
+    ```env
+    SECRET_KEY=cambia-esta-clave-secreta
+    ADMIN_USER=admin
+    ADMIN_PASS=admin123456
+    MUSEO_TTS_SHARED_KEY=pon_aqui_una_clave_compartida_tts
+    TTS_API_KEY=pon_aqui_una_clave_para_dispositivos_tts
+    NGROK_AUTHTOKEN=pon_aqui_tu_token_de_ngrok
+    NGROK_TTS_AUTHTOKEN=pon_aqui_tu_token_de_ngrok_para_tts
+    ```
+
+    If ngrok tunnels are not needed (local-only deployment), the `ngrok` and `ngrok-tts` services will fail to start but the rest of the stack will work normally.
+  </Step>
+
+  <Step title="Build and start all services">
+    From the project root directory:
+
+    ```bash
+    docker compose up -d --build
+    ```
+
+    The `--build` flag rebuilds the `museo-app` and `servertts` images from their respective `Dockerfile`s. The `ollama` and `ngrok` services use pre-built images pulled from Docker Hub. On first run, the Ollama init script will pull the configured chat and embedding models, which may take significant time depending on network and hardware.
+  </Step>
+
+  <Step title="Verify all services are up">
+    Check the status of every container:
+
+    ```bash
+    docker compose ps
+    ```
+
+    Run quick health checks against the two main HTTP services:
+
+    ```bash
+    curl http://IP_O_HOST:5000
+    curl http://IP_O_HOST:8010/health
+    ```
+
+    Replace `IP_O_HOST` with `localhost` for local access or your machine's LAN IP for network access.
+  </Step>
+
+  <Step title="Retrieve public ngrok URLs">
+    Once both ngrok containers are running, retrieve their public HTTPS URLs from the logs:
+
+    ```bash
+    # Public URL for the Flask web app
+    docker compose logs -f ngrok
+
+    # Public URL for the TTS sidecar
+    docker compose logs -f ngrok-tts
+    ```
+
+    Each service prints its assigned HTTPS URL on startup. You can also inspect them through the browser-based dashboards at the ports listed in the [Port Mappings](#port-mappings) table below.
+
+    After obtaining the TTS tunnel URL, update `.env`:
+
+    ```env
+    MUSEO_TTS_PUBLIC_BASE_URL=https://<your-ngrok-tts-subdomain>.ngrok-free.app
+    ```
+
+    Then recreate only the TTS service so it picks up the new value:
+
+    ```bash
+    docker compose up -d --build --force-recreate servertts
+    ```
+  </Step>
+</Steps>
+
+## Service Reference
+
+Each service in `docker-compose.yml` has a specific role. The table below summarises what each one does, its image source, and its key environment variables.
+
+### museo-app
+
+Built from the project root `Dockerfile` (Python 3.11-slim). The `docker/entrypoint.sh` script runs `flask --app app.py init-db`, optionally `create-admin` (when `CREATE_ADMIN_ON_BOOT=true`) and `seed` (when `SEED_ON_BOOT=true`), then launches Gunicorn:
+
+```bash
+gunicorn \
+  --bind 0.0.0.0:5000 \
+  --workers "${GUNICORN_WORKERS:-2}" \
+  --threads "${GUNICORN_THREADS:-4}" \
+  --timeout "${GUNICORN_TIMEOUT:-120}" \
+  app:app
+```
+
+Key environment variables injected by `docker-compose.yml`:
+
+```yaml
+DATABASE_URL: sqlite:////app/instance/bioscan.db
+CHROMA_PATH: /app/chroma_db
+OLLAMA_BASE_URL: http://ollama:11434
+OLLAMA_CHAT_URL: http://ollama:11434/api/chat
+OLLAMA_EMBED_URL: http://ollama:11434/api/embed
+MUSEO_TTS_INTERNAL_BASE_URL: http://servertts:8010
+```
+
+### ollama
+
+Uses `ollama/ollama:latest` with a custom entrypoint (`docker/ollama-init.sh`) that starts the Ollama server, waits for it to be ready, then pulls the chat and embedding models if they are not already cached:
+
+```bash
+# Pulls chat model if not present
+ollama pull "${OLLAMA_CHAT_MODEL:-qwen3.5:4b}"
+
+# Pulls embedding model if not present
+ollama pull "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+```
+
+The `ollama/` directory is mounted as a volume so downloaded models persist across restarts.
+
+### servertts
+
+Built from `Servertts/Dockerfile`. Communicates back to `museo-app` using:
+
+```yaml
+MUSEO_API_BASE_URL: http://museo-app:5000
+MUSEO_API_KEY: ${MUSEO_TTS_SHARED_KEY}
+```
+
+Audio files are cached in `Servertts/cache_audio/` and debug QR frames in `Servertts/debug_frames/`.
+
+### ngrok
+
+Uses `ngrok/ngrok:latest`. Tunnels the Flask app:
+
+```yaml
+command: ["http", "http://museo-app:5000"]
+environment:
+  NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+```
+
+### ngrok-tts
+
+A second `ngrok/ngrok:latest` instance with a separate auth token. Tunnels the TTS sidecar:
+
+```yaml
+command: ["http", "http://servertts:8010"]
+environment:
+  NGROK_AUTHTOKEN: ${NGROK_TTS_AUTHTOKEN}
+```
+
+## Port Mappings
+
+| Service | Host Port | Container Port | Description |
+|---|---|---|---|
+| `museo-app` | `5000` | `5000` | Flask / Gunicorn web application |
+| `servertts` | `8010` | `8010` | FastAPI TTS sidecar |
+| `ngrok` | `4040` | `4040` | ngrok web inspector for Flask tunnel |
+| `ngrok-tts` | `4041` | `4040` | ngrok web inspector for TTS tunnel |
+
+## Persistence Volumes
+
+All stateful data is stored in host-relative directories that survive `docker compose down` and `--build` rebuilds:
+
+| Host directory | Mount point in container | Contents |
+|---|---|---|
+| `./instance` | `/app/instance` | SQLite database (`bioscan.db`) |
+| `./chroma_db` | `/app/chroma_db` | ChromaDB vector index |
+| `./static/uploads` | `/app/static/uploads` | Uploaded images, audio, and documents |
+| `./ollama` | `/root/.ollama` | Ollama model weights |
+| `./Servertts/cache_audio` | `/app/cache_audio` | Cached MP3 audio files |
+| `./Servertts/debug_frames` | `/app/debug_frames` | JPEG frames for QR debugging |
+
+## Useful Docker Compose Commands
+
+Stop all services without removing volumes:
+
+```bash
+docker compose down
+```
+
+View live logs per service:
+
+```bash
+docker compose logs -f museo-app
+docker compose logs -f ollama
+docker compose logs -f servertts
+docker compose logs -f ngrok
+docker compose logs -f ngrok-tts
+```
+
+Force-recreate a single service (useful after changing `.env` values):
+
+```bash
+docker compose up -d --build --force-recreate museo-app
+docker compose up -d --build --force-recreate servertts
+docker compose up -d ngrok
+docker compose up -d ngrok-tts
+```
+
+If only ngrok fails to start (bad token), restart just that service after fixing `.env`:
+
+```bash
+docker compose up -d ngrok
+docker compose up -d ngrok-tts
+```
+
+## Health Checks
+
+Use these commands to confirm services are responding at the network level:
+
+```bash
+# Check the Flask app root
+curl http://IP_O_HOST:5000
+
+# Check the TTS sidecar health endpoint
+curl http://IP_O_HOST:8010/health
+```
+
+For a quick TTS audio test, call the `by-qr` endpoint for the seeded Cóndor Andino species (replace `TU_TTS_API_KEY` with your `TTS_API_KEY`):
+
+```bash
+curl "http://IP_O_HOST:8010/tts/by-qr/condor-001?key=TU_TTS_API_KEY"
+```
+
+To verify QR-from-camera resolution via the sidecar:
+
+```bash
+curl -X POST "http://IP_O_HOST:8010/qr/resolve-frame?key=TU_TTS_API_KEY" \
+  --data-binary "@frame.jpg" \
+  -H "Content-Type: image/jpeg"
+```
+
+## Orange Pi 4 Pro Tuning
+
+<Tip>
+The Orange Pi 4 Pro is a supported deployment target. Keep these points in mind when running BioScan Museo on it:
+
+**Use a 64-bit OS.** The Ollama container requires a 64-bit operating system. A 32-bit OS will prevent the `ollama` service from starting.
+
+**Expect a slow first build.** The initial `docker compose up -d --build` compiles Python wheels on an ARM board, which is significantly slower than on x86 hardware. Plan for several minutes.
+
+**Reduce Gunicorn workers if RAM or CPU is under pressure.** The defaults (`GUNICORN_WORKERS=2`, `GUNICORN_THREADS=4`) are tuned for a moderate workload. On the Orange Pi 4 Pro, lower these values in `.env` to free resources for Ollama:
+
+```env
+GUNICORN_WORKERS=1
+GUNICORN_THREADS=2
+```
+
+Then recreate the app container:
+
+```bash
+docker compose up -d --force-recreate museo-app
+```
+
+**Choose a small Ollama model.** The default `gpt-oss:20b-cloud` uses the Ollama Cloud API. For fully local inference on constrained hardware, set `OLLAMA_FALLBACK_MODEL=qwen3.5:4b` in `.env` and configure `OLLAMA_PROVIDER=local` to avoid loading large models into RAM.
+</Tip>

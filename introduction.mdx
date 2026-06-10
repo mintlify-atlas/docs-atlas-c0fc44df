@@ -1,0 +1,81 @@
+---
+title: "BioScan Museo: AI Museum Guide Architecture Overview"
+sidebarTitle: "Introduction"
+description: "BioScan Museo combines a Flask web app, Ollama LLM, ChromaDB RAG, and a FastAPI TTS sidecar into a self-hosted museum guide for bird exhibits."
+---
+
+BioScan Museo is a self-hosted, AI-powered interactive guide built for the Birds Hall. Visitors scan a QR code at each exhibit, land on a species detail page, and can chat with an AI guide that answers questions using curated museum documents, structured species data, and a live Ollama language model. Admins manage the entire catalogue — uploading images, audio, PDF fact sheets, and custom QR designs — through a built-in Flask admin panel. The platform is fully containerised: a single `docker compose up -d --build` brings up all five services with no external dependency beyond Docker and, optionally, an ngrok account for public HTTPS tunnels.
+
+## System Architecture
+
+BioScan Museo runs as five cooperating Docker services. The Flask web application is the central hub; it owns the SQLite database, handles user sessions, proxies chat to Ollama, and calls the TTS sidecar for audio generation. All inter-service communication happens over Docker's internal bridge network using stable service hostnames (`museo-app`, `ollama`, `servertts`).
+
+<CardGroup cols={2}>
+  <Card title="museo-app" icon="flask">
+    The main Flask 3 web application. Serves visitor pages and the admin panel, runs RAG retrieval against ChromaDB, streams chat responses from Ollama, manages SQLite via Flask-SQLAlchemy, and generates QR code images with the `qrcode[pil]` library. Gunicorn is the production WSGI server, tunable via `GUNICORN_WORKERS` and `GUNICORN_THREADS`.
+  </Card>
+  <Card title="ollama" icon="microchip">
+    Local LLM service based on the official `ollama/ollama:latest` image. Hosts both the chat model (default: `gpt-oss:20b-cloud`, fallback: `qwen3.5:9b`) and the embedding model (`nomic-embed-text`) used to build and query ChromaDB vectors. The `ollama-init.sh` script pulls missing models on first boot.
+  </Card>
+  <Card title="servertts" icon="volume-high">
+    FastAPI sidecar that generates MP3 audio narrations using Microsoft Edge TTS (`es-CO-GonzaloNeural` by default). Exposes a `/health` endpoint, a `/tts/by-qr/<qr_id>` audio endpoint, and a `/qr/resolve-frame` endpoint for camera-based QR decoding. Communicates back to `museo-app` via the internal `MUSEO_API_BASE_URL`.
+  </Card>
+  <Card title="ngrok" icon="globe">
+    Tunnels `http://museo-app:5000` to a public HTTPS URL using the `NGROK_AUTHTOKEN` token. Its inspector is accessible at port `4040`. Required when visitors need to reach the app from mobile QR scans over the public internet.
+  </Card>
+  <Card title="ngrok-tts" icon="link">
+    A dedicated second ngrok instance that tunnels `http://servertts:8010` using a separate `NGROK_TTS_AUTHTOKEN`. Its inspector runs on host port `4041`. Keeps the TTS public URL independent so it can be set as `MUSEO_TTS_PUBLIC_BASE_URL` in `.env`.
+  </Card>
+</CardGroup>
+
+## Technology Stack
+
+BioScan Museo is built on a focused set of Python libraries pinned in `requirements.txt`:
+
+| Layer | Library / Tool | Role |
+|---|---|---|
+| Web framework | Flask 3.0.3 | Routes, templates, CLI commands |
+| Auth | Flask-Login 0.6.3 | Session management, `login_required` guards |
+| Database ORM | Flask-SQLAlchemy 3.1.1 | SQLite models: `User`, `Species`, `Visit`, `ChatTurn`, `ScanEvent`, `QRStyle`, `SpeciesAuditLog` |
+| Vector store | chromadb 0.5.5 | Stores and queries document embeddings for RAG |
+| LLM | Ollama (local or cloud) | Chat completions and text embeddings |
+| TTS | Microsoft Edge TTS | Streaming MP3 generation in the FastAPI sidecar |
+| QR generation | qrcode\[pil\] | Styled QR images with `StyledPilImage`, multiple module drawers |
+| Image processing | Pillow | QR frame compositing, thumbnail positioning |
+| Document parsing | PyPDF2 3.0.1, python-docx 1.1.2 | Extracts text from uploaded PDFs and DOCX files for RAG indexing |
+| WSGI server | gunicorn | Production server inside the `museo-app` container |
+
+## Visitor Data Flow
+
+The journey from physical QR code to AI answer follows this path:
+
+1. **Scan** — A visitor scans a species QR code. The QR payload is the species `qr_id` (e.g., `condor-001`). The app route `GET /scan/<qr_id>` receives the request.
+2. **Log** — Flask records a `ScanEvent` (origin: `qr`, `web`, or `manual`), and — if the visitor is authenticated — creates a `Visit` record for personalised tour memory.
+3. **Species page** — The visitor is redirected to `GET /especie/<qr_id>`, which renders the full species detail template with taxonomy, habitat, diet, images, and audio.
+4. **Chat** — The visitor submits a question. `POST /api/chat_stream` classifies the question scope (`specimen`, `general`, or mixed), retrieves relevant chunks from ChromaDB via `VectorStore.query_species()`, and builds a structured context from the SQLite species record.
+5. **LLM answer** — The assembled context is sent to Ollama. The response streams back token-by-token via `stream_with_context`.
+6. **TTS narration** — Optionally, `servertts` synthesises the species description as an MP3 accessible at `GET /tts/by-qr/<qr_id>`.
+
+## User Roles
+
+BioScan Museo has two roles enforced by `Flask-Login` and an `is_admin` flag on the `User` model:
+
+- **Visitors** — Can browse `/especies`, view species detail pages at `/especie/<qr_id>`, register an account (`/register`), and chat with the AI guide once authenticated. Anonymous visitors can still scan QR codes and view species; scan events are recorded without a `user_id`.
+- **Admins** — Have access to the full `/admin/` panel: create, edit, and delete species; upload images, audio, and PDF/DOCX/TXT museum documents; customise QR styles; view scan metrics at `/admin/metricas`; and review the species audit log at `/admin/especies/auditoria`.
+
+## Persistence
+
+All stateful data lives in host-mounted directories that survive container restarts and rebuilds:
+
+| Directory | Contents |
+|---|---|
+| `instance/` | SQLite database (`bioscan.db`) |
+| `chroma_db/` | ChromaDB vector embeddings |
+| `static/uploads/` | Uploaded images, audio, and document files |
+| `ollama/` | Downloaded Ollama model weights |
+| `Servertts/cache_audio/` | Cached MP3 audio files generated by Edge TTS |
+| `Servertts/debug_frames/` | JPEG frames saved during QR-from-camera debugging |
+
+<Note>
+The application's user-facing copy — species names, flash messages, admin labels, and the AI guide's chat responses — is written in Spanish. The internal API surface (route paths, JSON keys, `.env` variable names, and Flask CLI commands) uses English identifiers, so it is straightforward to integrate with English-language tooling and CI pipelines.
+</Note>

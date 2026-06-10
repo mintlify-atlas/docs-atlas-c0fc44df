@@ -1,0 +1,223 @@
+---
+title: "TTS WebSocket API: Real-Time QR Detection Stream"
+sidebarTitle: "WebSocket"
+description: "Stream JPEG frames over WebSocket to BioScan Museo's /ws/qr-stream endpoint; receive species text and audio metadata the moment a QR code is detected."
+---
+
+The WebSocket endpoint `ws://localhost:8010/ws/qr-stream` provides a persistent, low-latency channel for streaming JPEG frames from a camera and receiving species information the moment a QR code is recognised. Unlike the HTTP frame endpoints, the connection stays open across multiple frames — the server simply discards frames where no QR is detected and closes cleanly after the first successful detection.
+
+---
+
+## WS /ws/qr-stream
+
+**Protocol:** WebSocket (RFC 6455)  
+**Authentication:** `?key=<TTS_API_KEY>` query parameter — validated immediately after the connection is accepted, before any frame processing begins.
+
+### Connection URL
+
+```
+ws://localhost:8010/ws/qr-stream?key=<TTS_API_KEY>&style=<style>
+```
+
+### Query Parameters
+
+<ParamField query="key" type="string" required>
+  Your `TTS_API_KEY`. Checked before the first frame is processed. An invalid or missing key triggers an `error` message followed by a close with code `1008` (Policy Violation).
+</ParamField>
+
+<ParamField query="style" type="string">
+  Narration style for the `text` field in the `qr_found` message. One of `ficha`, `narrativo`, `corto`. Defaults to `ficha`. An invalid value triggers an `error` message and close `1011`.
+</ParamField>
+
+### Frame Format
+
+After the connection is established, the client sends **binary messages** containing raw JPEG bytes. Each message must be a single complete JPEG image — partial or multi-frame messages are not supported.
+
+The server runs the same four-stage QR detection pipeline used by the HTTP endpoints:
+
+1. **Color** — detection on original BGR frame
+2. **Grayscale** — single-channel conversion
+3. **Otsu threshold** — binarisation
+4. **2× upscale** — cubic interpolation on grayscale
+
+Frames that yield no QR code are silently skipped; the server keeps receiving the next binary message.
+
+<Note>
+  Every frame received via the WebSocket is saved to `DEBUG_FRAMES_DIR` with a timestamped filename (e.g. `incoming_ws_1712345678.jpg`). The last received frame is also always accessible at `/debug/last-frame`. Clear or rotate `DEBUG_FRAMES_DIR` periodically in production to avoid unbounded disk usage.
+</Note>
+
+### Server → Client Messages
+
+The server only ever sends JSON text messages. There are two possible message types.
+
+#### `error`
+
+Sent when authentication fails or an unhandled exception occurs during frame processing. The connection is closed by the server immediately after sending this message.
+
+```json
+{
+  "type": "error",
+  "detail": "unauthorized"
+}
+```
+
+| Close Code | Meaning |
+|---|---|
+| `1008` | Policy violation — authentication failure |
+| `1011` | Internal error — unexpected exception during processing |
+
+<ParamField name="type" type="string">
+  Always `"error"`.
+</ParamField>
+
+<ParamField name="detail" type="string">
+  Human-readable error description, e.g., `"unauthorized"` or an exception message.
+</ParamField>
+
+#### `qr_found`
+
+Sent once when a valid QR code is successfully detected and the species payload is resolved. After sending this message the server closes the connection cleanly with code `1000`.
+
+```json
+{
+  "type": "qr_found",
+  "found": true,
+  "qr_id": "qr-condor-001",
+  "species_id": "condor-001",
+  "text": "Este animal llamado Cóndor Andino tiene como nombre científico Vultur gryphus...",
+  "fields": {
+    "species_id": "condor-001",
+    "qr_id": "qr-condor-001",
+    "common_name": "Cóndor Andino",
+    "scientific_name": "Vultur gryphus",
+    "description": "El cóndor andino es el ave voladora más grande del mundo.",
+    "habitat": "los Andes de Sudamérica",
+    "diet": "carroña",
+    "curiosities": ["Puede planear más de 5 horas sin batir las alas"]
+  },
+  "decode_method": "grayscale"
+}
+```
+
+<ResponseField name="type" type="string">
+  Always `"qr_found"`.
+</ResponseField>
+
+<ResponseField name="found" type="boolean">
+  Always `true` in this message type.
+</ResponseField>
+
+<ResponseField name="qr_id" type="string">
+  Raw QR code value decoded from the frame.
+</ResponseField>
+
+<ResponseField name="species_id" type="string">
+  Canonical species ID resolved from the QR index.
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  Narration text for the species in the requested `style`.
+</ResponseField>
+
+<ResponseField name="fields" type="object">
+  Full set of cleaned species fields: `species_id`, `qr_id`, `common_name`, `scientific_name`, `description`, `habitat`, `diet`, `curiosities`.
+</ResponseField>
+
+<ResponseField name="decode_method" type="string">
+  Detection strategy that succeeded: `color`, `grayscale`, `threshold_otsu`, or `upscaled_gray`.
+</ResponseField>
+
+<Note>
+  The WebSocket connection closes after the **first** successful QR detection. To scan a second exhibit, the client must open a new connection. This is by design — it prevents stale frame data from triggering duplicate detections after an exhibit has already been identified.
+</Note>
+
+### Connection Lifecycle
+
+```
+Client                              Server
+  │                                   │
+  │── WS Upgrade (key, style) ───────►│  Accept connection
+  │                                   │  Validate key & style
+  │◄── 1008 close (if auth fails) ────│
+  │                                   │
+  │── binary JPEG frame ─────────────►│  Run QR detection
+  │                                   │  (no QR found — keep listening)
+  │── binary JPEG frame ─────────────►│  Run QR detection
+  │                                   │  QR found ✓
+  │◄── { type: "qr_found", ... } ─────│
+  │◄── close 1000 ────────────────────│
+  │                                   │
+```
+
+### JavaScript Client Example
+
+```js
+const WS_URL = 'ws://localhost:8010/ws/qr-stream?key=YOUR_TTS_API_KEY&style=ficha';
+
+const ws = new WebSocket(WS_URL);
+ws.binaryType = 'arraybuffer';
+
+ws.onopen = () => {
+  console.log('Connected — streaming frames…');
+  streamFrames();
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === 'qr_found') {
+    console.log('Species detected:', msg.species_id);
+    console.log('Narration text:', msg.text);
+    // Play pre-generated audio:
+    const audioUrl = `/tts/by-qr/${msg.qr_id}?key=YOUR_TTS_API_KEY&style=ficha`;
+    new Audio(audioUrl).play();
+  }
+
+  if (msg.type === 'error') {
+    console.error('TTS WS error:', msg.detail);
+  }
+};
+
+ws.onclose = (event) => {
+  console.log(`Connection closed — code ${event.code}`);
+  // Reconnect after a short delay for the next exhibit scan
+  if (event.code === 1000) {
+    setTimeout(() => reconnect(), 1500);
+  }
+};
+
+// Send JPEG frames from a <video> element via canvas
+function streamFrames() {
+  const video = document.getElementById('camera');
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext('2d');
+
+  const interval = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      clearInterval(interval);
+      return;
+    }
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob((blob) => {
+      blob.arrayBuffer().then((buf) => ws.send(buf));
+    }, 'image/jpeg', 0.85);
+  }, 200); // send ~5 fps
+}
+```
+
+<Warning>
+  Every JPEG frame sent to `ws/qr-stream` is persisted to `DEBUG_FRAMES_DIR` on disk. In a production deployment with continuous streaming this will consume significant storage. Set `DEBUG_FRAMES_DIR` to a tmpfs mount, add a periodic cleanup cron job, or reduce frame rate to minimise I/O. The `/debug/last-frame` HTTP endpoint always reflects the most recent frame regardless of the cleanup policy.
+</Warning>
+
+### Error Reference
+
+| Close Code | `type` | `detail` | Cause |
+|---|---|---|---|
+| `1008` | `error` | `"unauthorized"` | `key` param missing or does not match `TTS_API_KEY` |
+| `1011` | `error` | `"invalid_style"` | `style` param not one of `ficha`, `narrativo`, `corto` |
+| `1011` | `error` | `"species_audio_not_found"` | QR detected but not in `_qr_index.json` |
+| `1011` | `error` | `"species_meta_not_found"` | Index entry exists but `meta.json` is missing |
+| `1011` | `error` | exception message | Unexpected server-side error during frame processing |
+| `1000` | _(no message)_ | — | Client disconnected cleanly before a QR was found |

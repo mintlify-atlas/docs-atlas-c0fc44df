@@ -1,47 +1,164 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with BioScan Museo in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Run BioScan Museo locally with Docker Compose, create your first species, and scan a QR code — all in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through cloning BioScan Museo, configuring the minimum required environment variables, starting all five Docker services, and verifying that both the Flask web app and the TTS sidecar are healthy. By the end you will be logged into the admin panel and looking at the seeded Cóndor Andino species card — ready to scan a QR and start chatting.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you start, make sure the following are available on your machine:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+- **Docker** and **Docker Compose** (Compose V2, i.e. `docker compose` — not `docker-compose`)
+- **git** to clone the repository
+- An **ngrok account** (optional — only needed if you want public HTTPS URLs for mobile QR scanning)
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Clone the project and enter the directory:
 
     ```bash
-    npm install your-package
+    git clone <repository-url> InformacionMuseo
+    cd InformacionMuseo
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Copy and configure .env">
+    Copy the example file and open it in your editor:
 
     ```bash
-    your-cli init
+    cp .env.example .env
+    ```
+
+    Set **at minimum** these variables before starting the stack. All keys below come directly from `.env.example`:
+
+    ```env
+    # Flask session security — change this to a random string
+    SECRET_KEY=cambia-esta-clave-secreta
+
+    # Initial admin account created automatically on first boot
+    ADMIN_USER=admin
+    ADMIN_PASS=admin123456
+
+    # Shared secret between museo-app and servertts
+    MUSEO_TTS_SHARED_KEY=pon_aqui_una_clave_compartida_tts
+
+    # Key that external TTS clients (e.g. mobile kiosks) must send
+    TTS_API_KEY=pon_aqui_una_clave_para_dispositivos_tts
+
+    # Chat model for Ollama (local default shown; change to a cloud model if needed)
+    OLLAMA_CHAT_MODEL=gpt-oss:20b-cloud
+
+    # Only required when using Ollama Cloud instead of the local Ollama service
+    OLLAMA_API_KEY=pon_aqui_tu_api_key_de_ollama_cloud
+    ```
+
+    Optional but recommended for public QR scanning via ngrok:
+
+    ```env
+    # ngrok tunnel for the Flask app
+    NGROK_AUTHTOKEN=pon_aqui_tu_token_de_ngrok
+
+    # Separate ngrok tunnel for the TTS sidecar
+    NGROK_TTS_AUTHTOKEN=pon_aqui_tu_token_de_ngrok_para_tts
+
+    # Public HTTPS URL of the TTS sidecar (fill in after ngrok-tts starts)
+    MUSEO_TTS_PUBLIC_BASE_URL=
+    ```
+
+    <Warning>
+      On first run, the `ollama` service automatically pulls the chat model (set in `OLLAMA_CHAT_MODEL`) and the embedding model (`nomic-embed-text`). Depending on your network speed and hardware, this download can take **several minutes to over an hour**. The `museo-app` service will be healthy before the models finish downloading; chat will return errors until Ollama is ready. Monitor progress with `docker compose logs -f ollama`.
+    </Warning>
+  </Step>
+
+  <Step title="Build and start the stack">
+    From the project root, run:
+
+    ```bash
+    docker compose up -d --build
+    ```
+
+    Docker Compose builds the `museo-app` image from the project `Dockerfile` (Python 3.11-slim base), builds the `servertts` image from `Servertts/Dockerfile`, and pulls the pre-built `ollama/ollama:latest` and `ngrok/ngrok:latest` images. All five services start in the background.
+  </Step>
+
+  <Step title="Initialise the database and seed sample data">
+    The `docker/entrypoint.sh` script automatically runs `flask --app app.py init-db` and `flask --app app.py create-admin` on every container start (controlled by `CREATE_ADMIN_ON_BOOT=true`). To also seed the sample Cóndor Andino species, run:
+
+    ```bash
+    docker compose exec museo-app flask --app app.py seed
+    ```
+
+    You can run any of the available Flask CLI commands against the running container:
+
+    ```bash
+    # Initialise or migrate the database schema
+    docker compose exec museo-app flask --app app.py init-db
+
+    # Create the admin user from ADMIN_USER / ADMIN_PASS in .env
+    docker compose exec museo-app flask --app app.py create-admin
+
+    # Seed the Cóndor Andino sample species (condor-001)
+    docker compose exec museo-app flask --app app.py seed
+
+    # Re-embed all species documents into ChromaDB
+    docker compose exec museo-app flask --app app.py reindex-all
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Open the app and verify the sample species">
+    Navigate to the Flask app in your browser:
+
+    ```
+    http://localhost:5000
+    ```
+
+    Log in with the credentials you set in `.env` (`ADMIN_USER` / `ADMIN_PASS`). Then go to the admin species list:
+
+    ```
+    http://localhost:5000/admin/especies
+    ```
+
+    You should see the seeded **Cóndor Andino** (*Vultur gryphus*, QR ID: `condor-001`). Click it to view the full species detail page at:
+
+    ```
+    http://localhost:5000/especie/condor-001
+    ```
+
+    The following local ports are exposed by the stack:
+
+    | Service | URL |
+    |---|---|
+    | Flask web app | `http://localhost:5000` |
+    | TTS sidecar (FastAPI) | `http://localhost:8010` |
+    | ngrok inspector (Flask tunnel) | `http://localhost:4040` |
+    | ngrok-tts inspector (TTS tunnel) | `http://localhost:4041` |
+  </Step>
+
+  <Step title="Verify the TTS sidecar health">
+    Confirm the FastAPI TTS service is running:
 
     ```bash
-    your-cli start
+    curl http://localhost:8010/health
+    ```
+
+    A healthy response confirms the sidecar is up and connected to `museo-app`. You can also test audio generation for the seeded species directly (replace `TU_TTS_API_KEY` with your `TTS_API_KEY` value):
+
+    ```bash
+    curl "http://localhost:8010/tts/by-qr/condor-001?key=TU_TTS_API_KEY"
+    ```
+
+    To check overall service status at any time:
+
+    ```bash
+    docker compose ps
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What's Next
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+- **Add species** — Go to `/admin/especies/nueva` to create a new bird species. Upload a JPEG or PNG image, an optional MP3, and one or more PDF/DOCX/TXT museum documents that will be indexed into ChromaDB for RAG.
+- **Customise QR codes** — Visit `/admin/qr` to choose frame styles (simple, card, badge, or scanme) and module shapes for each species QR.
+- **Enable public tunnels** — Check `docker compose logs -f ngrok` for the public HTTPS URL, then set `MUSEO_TTS_PUBLIC_BASE_URL` in `.env` and recreate the `servertts` container.
+- **Production tuning** — Adjust `GUNICORN_WORKERS`, `GUNICORN_THREADS`, and `GUNICORN_TIMEOUT` in `.env` to match your hardware. See the [Deployment guide](/deployment) for Orange Pi 4 Pro recommendations.

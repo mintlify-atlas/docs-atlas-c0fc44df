@@ -1,0 +1,102 @@
+---
+title: "Environment Variables Reference for BioScan Museo"
+sidebarTitle: "Environment"
+description: "Complete reference for all BioScan Museo environment variables: app secrets, database, admin credentials, Gunicorn tuning, and ngrok tokens."
+---
+
+BioScan Museo is configured entirely through environment variables, keeping secrets out of source code and making deployments portable across development, staging, and production environments. All variables are loaded at startup via `python-dotenv` — the Flask app calls `load_dotenv()` before any configuration is read, and the TTS sidecar does the same from its own `.env` file inside the `Servertts/` directory.
+
+## Setup workflow
+
+Copy the example file to create your real `.env` and then fill in every required value before starting the containers:
+
+```bash
+cp .env.example .env
+# edit .env with your real values
+docker compose up
+```
+
+<Warning>
+Never commit your `.env` file to version control. It contains session secrets, database credentials, and API keys. The repository's `.gitignore` already excludes `.env`, but double-check before pushing.
+</Warning>
+
+---
+
+## Flask / App
+
+These variables configure the core Flask application: session security, database connection, and the internal link to the TTS sidecar.
+
+| Variable | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `SECRET_KEY` | string | `dev-secret-change-me` | **Yes** | Flask session signing key. Use a long, random string in production. |
+| `DATABASE_URL` | string | `sqlite:///bioscan.db` | No | SQLAlchemy connection string. Defaults to a local SQLite file. Use a full Postgres URI for production. |
+| `MUSEO_TTS_SHARED_KEY` | string | — | **Yes** | Shared secret between the Flask app and the TTS sidecar. The Flask app sends this in the `X-API-Key` header on every internal sync/delete call. Must match `MUSEO_API_KEY` in the TTS service. |
+| `MUSEO_TTS_INTERNAL_BASE_URL` | string | `http://servertts:8010` | No | Base URL the Flask app uses to reach the TTS sidecar over the Docker internal network. Falls back to `MUSEO_TTS_PUBLIC_BASE_URL` if not set. |
+| `TTS_API_KEY` | string | — | **Yes** | Key required by external callers (e.g. ESP32 devices) to access the TTS endpoints. Set this to a long random string and distribute it only to trusted hardware. |
+| `MUSEO_TTS_PUBLIC_BASE_URL` | string | _(empty)_ | No | The public HTTPS URL of the TTS sidecar (normally the ngrok-tts tunnel URL). Used as a fallback for `MUSEO_TTS_INTERNAL_BASE_URL` when there is no internal Docker network. |
+
+<Note>
+`MUSEO_TTS_INTERNAL_BASE_URL` is the address the Flask backend uses to talk to the TTS service inside the Docker network. `MUSEO_TTS_PUBLIC_BASE_URL` is the address exposed to external clients (devices, browsers). Both can point to the same host in single-machine setups.
+</Note>
+
+---
+
+## Admin
+
+These variables control the initial administrator account created automatically when `CREATE_ADMIN_ON_BOOT=true`.
+
+| Variable | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `ADMIN_USER` | string | `admin` | No | Username for the bootstrap admin account. Read by the `create-admin` Flask CLI command. |
+| `ADMIN_PASS` | string | `admin123456` | **Yes** | Password for the bootstrap admin account. Change this immediately in any non-local environment. |
+| `CREATE_ADMIN_ON_BOOT` | boolean | `true` | No | When `true`, the entrypoint runs `flask create-admin` on every container start. The command is idempotent — it skips creation if the user already exists. |
+| `SEED_ON_BOOT` | boolean | `false` | No | When `true`, the entrypoint runs `flask seed` to insert a sample Cóndor Andino species. Useful for first-time demos; keep `false` in production. |
+
+---
+
+## LLM
+
+LLM-specific variables are documented in full on the [LLM Settings](/configuration/llm) page. The variables that appear in this section are those also present in the main `.env.example` file for reference.
+
+See **[Configure the Ollama LLM Backend](/configuration/llm)** for complete documentation of all `OLLAMA_*` variables.
+
+---
+
+## TTS Voice Service
+
+TTS-specific variables are documented in full on the [TTS Settings](/configuration/tts) page. The variables that appear in the main `.env.example` are included here for quick reference.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `EDGE_TTS_VOICE` | string | `es-CO-GonzaloNeural` | Microsoft Edge TTS voice identifier used to generate all species narrations. |
+| `EDGE_TTS_RATE` | string | `+0%` | Speech rate offset relative to the voice's natural rate. |
+| `EDGE_TTS_VOLUME` | string | `+0%` | Volume offset relative to the voice's default level. |
+
+See **[Configure the TTS Voice Service](/configuration/tts)** for the full list including `AUDIO_CACHE_DIR`, `DEBUG_FRAMES_DIR`, and `MUSEO_API_BASE_URL`.
+
+---
+
+## Gunicorn
+
+These variables tune the Gunicorn WSGI server that serves the Flask application in production.
+
+| Variable | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `GUNICORN_WORKERS` | integer | `2` | No | Number of worker processes. A common rule of thumb is `2 × CPU cores + 1`. |
+| `GUNICORN_THREADS` | integer | `4` | No | Number of threads per worker. Higher values improve concurrency for I/O-bound paths like LLM streaming. |
+| `GUNICORN_TIMEOUT` | integer | `120` | No | Worker timeout in seconds. Set this higher than the longest expected LLM response time. |
+
+---
+
+## Ngrok
+
+BioScan Museo uses two separate ngrok tunnels: one for the Flask app and one exclusively for the TTS sidecar. Keeping them separate allows the TTS service to be restarted independently without disrupting the main application URL.
+
+| Variable | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `NGROK_AUTHTOKEN` | string | — | Conditionally | ngrok authentication token for the main Flask tunnel. Only required if you are using ngrok for the Flask service. |
+| `NGROK_TTS_AUTHTOKEN` | string | — | Conditionally | ngrok authentication token for the dedicated TTS tunnel. Only required if exposing the TTS service via ngrok. Once the tunnel is up, copy its HTTPS URL into `MUSEO_TTS_PUBLIC_BASE_URL`. |
+
+<Note>
+Free ngrok accounts issue a random subdomain on every restart. If you need a stable URL for `MUSEO_TTS_PUBLIC_BASE_URL`, consider a paid ngrok plan with a reserved domain, or run both services behind a reverse proxy with a fixed hostname.
+</Note>

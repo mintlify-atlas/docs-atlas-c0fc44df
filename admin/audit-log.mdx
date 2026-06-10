@@ -1,0 +1,206 @@
+---
+title: "Species Audit Log: Track Admin Changes in BioScan Museo"
+sidebarTitle: "Audit Log"
+description: "BioScan Museo's species audit log records every admin create, update, delete, and view action with field-level diffs and historical snapshots."
+---
+
+Every time an admin creates, edits, or deletes a species record — or views a species detail page while authenticated as an admin — BioScan Museo writes an entry to the `species_audit_log` table. Each entry captures who made the change, what action was taken, the before and after values for updated fields, and a snapshot of the species' name and QR identifier at the time of the action. Because snapshot columns are written at the moment of the event, audit records remain readable and queryable even after a species has been permanently deleted from the catalog.
+
+## Data Model
+
+The `SpeciesAuditLog` model (table: `species_audit_log`) stores one row per auditable event. Update events produce one row **per changed field**, so a single form submission that modifies five fields creates five audit rows sharing the same timestamp and `user_id`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | Integer (PK) | Auto-increment primary key |
+| `species_id` | String(64) | ID of the affected species (matches `Species.id`); retained after deletion |
+| `user_id` | Integer (FK → `user.id`) | Admin who performed the action; `NULL` for system-initiated events |
+| `action` | String(20) | One of `created`, `updated`, `deleted`, or `viewed_admin` |
+| `field_name` | String(64) | Name of the changed field; only populated for `updated` actions |
+| `old_value` | Text | Value of the field before the change; only for `updated` actions |
+| `new_value` | Text | Value of the field after the change; only for `updated` actions |
+| `created_at` | DateTime | UTC timestamp of the event |
+| `notes` | Text | Human-readable note attached to `created` and `deleted` entries |
+| `species_name_snapshot` | String(200) | Common name of the species at the time of the event |
+| `species_scientific_name_snapshot` | String(200) | Scientific name of the species at the time of the event |
+| `qr_id_snapshot` | String(64) | QR identifier of the species at the time of the event |
+
+### Snapshot Columns
+
+The three snapshot columns (`species_name_snapshot`, `species_scientific_name_snapshot`, `qr_id_snapshot`) are populated on every audit write, regardless of action type. When a species is later deleted, these columns allow the audit UI and API to display meaningful information about deleted species without needing to join against a now-missing row. The admin audit view automatically falls back to snapshot values whenever `db.session.get(Species, log.species_id)` returns `None`.
+
+---
+
+## Action Types
+
+| Action | When it fires | `field_name` populated |
+|--------|--------------|------------------------|
+| `created` | `POST /admin/especies/nueva` — new species saved successfully | No; a summary note is stored instead |
+| `updated` | `POST /admin/especies/<id>/editar` — one row per changed field | Yes — the name of the field that changed |
+| `deleted` | `POST /admin/especies/<id>/eliminar` — before the record is removed | No; a deletion note is stored instead |
+| `viewed_admin` | `GET /especie/<qr_id>?origin=manual` when the requester is an admin | No |
+
+### Fields Tracked for Updates
+
+The `log_species_updated()` helper compares a snapshot of the species taken before the edit form is submitted against the updated object after processing. A separate audit row is written for each field where `str(old_value) != str(new_value)`.
+
+The following fields are tracked:
+
+`qr_id` · `nombre_comun` · `nombre_cientifico` · `familia` · `orden` · `descripcion` · `habitat` · `dieta` · `zonas` · `museo_info` · `imagen` · `audio` · `curiosidades_json` · `thumb_pos_x` · `thumb_pos_y` · `thumb_zoom`
+
+### `viewed_admin` Deduplication
+
+To prevent the audit log from filling up with repeated view events during normal browsing, `log_species_viewed_admin()` checks for an existing `viewed_admin` entry for the same `user_id` and `species_id` within the past **5 minutes**. If a recent entry is found, no new row is written. This window is hardcoded in `app.py` and applies per user-species pair.
+
+---
+
+## Admin UI
+
+The audit log is accessible to admins at `/admin/especies/auditoria`. The view is paginated at **10 entries per page** (most recent first) and supports the following filter controls:
+
+| Filter | Query param | Accepted values |
+|--------|-------------|-----------------|
+| Species | `species_id` | Internal species ID (e.g. `condor-001`) |
+| Action | `action` | `created`, `updated`, `deleted`, `viewed_admin` |
+| Admin user | `user_id` | Integer user ID; only admin users appear in the dropdown |
+| Start date | `start` | `YYYY-MM-DD`; defaults to 30 days ago |
+| End date | `end` | `YYYY-MM-DD`; defaults to today |
+| Page | `page` | Integer; defaults to `1` |
+
+All filter parameters are validated server-side. An invalid `action` value is silently reset to show all actions. A `species_id` that has no existing species record but does have historical audit rows is still accepted, allowing admins to review the audit history of deleted species.
+
+---
+
+## JSON API
+
+The same data is available as a JSON response at:
+
+```
+GET /api/admin/especies/auditoria
+```
+
+This endpoint accepts the identical query parameters as the HTML view and requires an active admin session. It returns a JSON object built by `build_audit_context()`.
+
+### Response Structure
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `filters.species_id` | string | Active species filter, or `""` |
+| `filters.action` | string | Active action filter, or `""` |
+| `filters.user_id` | string | Active user filter, or `""` |
+| `filters.start` | string | Start date in `YYYY-MM-DD` |
+| `filters.end` | string | End date in `YYYY-MM-DD` |
+| `filters.species_options` | array | All species for filter dropdown: `[{id, nombre_comun}]` |
+| `filters.user_options` | array | All admin users for filter dropdown: `[{id, nombre}]` |
+| `logs` | array | Formatted audit entries (see below) |
+| `total` | integer | Total matching rows across all pages |
+| `pagination.page` | integer | Current page number |
+| `pagination.pages` | integer | Total number of pages |
+| `pagination.has_next` | boolean | Whether a next page exists |
+| `pagination.has_prev` | boolean | Whether a previous page exists |
+| `pagination.next_num` | integer \| null | Next page number |
+| `pagination.prev_num` | integer \| null | Previous page number |
+
+### Log Entry Object
+
+Each element in the `logs` array has the following shape:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `id` | integer | Audit log row ID |
+| `species_id` | string | Internal species ID |
+| `species_name` | string | Common name (live or from snapshot if species is deleted) |
+| `species_scientific_name` | string | Scientific name (live or snapshot) |
+| `qr_id` | string | QR code identifier (live or snapshot) |
+| `action` | string | `created`, `updated`, `deleted`, or `viewed_admin` |
+| `field_name` | string \| null | Field that changed (only for `updated`) |
+| `old_value` | string \| null | Value before the change (only for `updated`) |
+| `new_value` | string \| null | Value after the change (only for `updated`) |
+| `created_at` | string | UTC timestamp formatted as `YYYY-MM-DD HH:MM:SS` |
+| `user_id` | integer \| null | ID of the admin user; `null` for system events |
+| `user_name` | string | Display name of the admin user, or `"Sistema"` if none |
+| `notes` | string \| null | Note attached to `created` or `deleted` entries |
+
+**Example request:**
+
+```bash
+curl -b cookies.txt \
+  "http://localhost:5000/api/admin/especies/auditoria?action=updated&start=2025-01-01&page=1"
+```
+
+**Example response (truncated):**
+
+```json
+{
+  "filters": {
+    "species_id": "",
+    "action": "updated",
+    "user_id": "",
+    "start": "2025-01-01",
+    "end": "2025-07-10",
+    "species_options": [
+      { "id": "condor-001", "nombre_comun": "Cóndor Andino" }
+    ],
+    "user_options": [
+      { "id": 1, "nombre": "Administrador" }
+    ]
+  },
+  "logs": [
+    {
+      "id": 42,
+      "species_id": "condor-001",
+      "species_name": "Cóndor Andino",
+      "species_scientific_name": "Vultur gryphus",
+      "qr_id": "condor-001",
+      "action": "updated",
+      "field_name": "descripcion",
+      "old_value": "Ave carroñera de los Andes.",
+      "new_value": "Ave carroñera emblemática de los Andes, con una envergadura de hasta 3,2 metros.",
+      "created_at": "2025-06-15 14:32:07",
+      "user_id": 1,
+      "user_name": "Administrador",
+      "notes": null
+    }
+  ],
+  "total": 134,
+  "pagination": {
+    "page": 1,
+    "pages": 14,
+    "has_next": true,
+    "has_prev": false,
+    "next_num": 2,
+    "prev_num": null
+  }
+}
+```
+
+<Tip>
+  Use the JSON API to build external reports or export audit data to a spreadsheet. Combine the `species_id` and date range filters to export the full change history for a single species before archiving or deleting it.
+</Tip>
+
+---
+
+## Audit Write Timing
+
+All audit helpers (`log_species_created`, `log_species_updated`, `log_species_deleted`) call `db.session.add()` but **do not commit**. The commit is always performed by the calling route handler after all processing is complete. This means a failed upload or validation error before the commit will also roll back the audit entries, keeping the log consistent with actual database state.
+
+The `viewed_admin` helper follows the same pattern — `db.session.add()` without commit — and the route handler commits after the deduplication check passes.
+
+<Note>
+  Audit rows for deleted species are written **before** `db.session.delete(item)` is called in the delete route. This guarantees the snapshot columns capture the species' final state before any cascading deletes are processed.
+</Note>
+
+---
+
+## Database Indexes
+
+The `species_audit_log` table is created with four indexes to support efficient filtering across the large volumes of data generated by `seed-demo-data` or busy production deployments:
+
+| Index | Column | Purpose |
+|-------|--------|---------|
+| `idx_audit_species` | `species_id` | Filter by species |
+| `idx_audit_user` | `user_id` | Filter by admin user |
+| `idx_audit_action` | `action` | Filter by action type |
+| `idx_audit_time` | `created_at` | Order by and date-range filter |
+
+These indexes are created by `ensure_schema_updates()` and are safe to apply to an existing database that already has data in the table.

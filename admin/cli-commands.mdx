@@ -1,0 +1,281 @@
+---
+title: "BioScan Museo Flask CLI Command Reference"
+sidebarTitle: "CLI Commands"
+description: "Reference for all BioScan Museo Flask CLI commands: initialize the database, create admin and regular users, seed sample data, and reindex the RAG vector store."
+---
+
+BioScan Museo ships with a set of Flask CLI commands defined directly in `app.py`. These commands handle every aspect of initial setup and ongoing maintenance — from creating the database schema to populating demo data for testing. All commands run within the Flask application context, so the app configuration and `.env` variables are automatically loaded before any command logic executes.
+
+<Note>
+  Copy `.env.example` to `.env` and fill in your values before running any CLI command. At minimum, set `SECRET_KEY`, `DATABASE_URL`, `ADMIN_USER`, and `ADMIN_PASS`.
+</Note>
+
+## Command Overview
+
+| Command | Purpose | Idempotent |
+|---------|---------|------------|
+| `init-db` | Create all tables and apply schema migrations | Yes |
+| `create-admin` | Create the admin user from env vars | Yes |
+| `create-user` | Create a regular user from env vars | Yes |
+| `seed` | Insert the sample Cóndor Andino species | Yes |
+| `reindex-all` | Reindex every species into ChromaDB | Yes |
+| `seed-demo-data` | Generate ~1500 scan events and audit log entries for testing | No — adds more data each run |
+
+---
+
+## `init-db`
+
+Initializes the SQLite database by calling `db.create_all()` to create all model tables, then runs `ensure_schema_updates()` to apply any incremental schema migrations (adding columns, creating indexes, backfilling `qr_id` values, and enforcing the unique QR index). Safe to run on a database that already has tables — `create_all` skips existing tables and `ensure_schema_updates` is additive only.
+
+**When to use:** On first deployment, after pulling schema-changing code, or any time you receive a "no such column" error at startup.
+
+**Required env vars:** None. Uses `DATABASE_URL` if set; falls back to `sqlite:///bioscan.db`.
+
+```bash
+flask --app app.py init-db
+```
+
+**Expected output:**
+
+```
+[OK] DB inicializada
+```
+
+---
+
+## `create-admin`
+
+Creates the initial admin user account. The username and password are read from environment variables. If a user with that username already exists, the command prints an info message and exits without making any changes — making it safe to include in startup scripts.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADMIN_USER` | `admin` | Username for the admin account (stored lowercase) |
+| `ADMIN_PASS` | `admin123` | Plain-text password; hashed with Werkzeug before storage |
+
+```bash
+flask --app app.py create-admin
+```
+
+**Expected output (new account):**
+
+```
+[OK] Admin creado: admin / admin123456
+```
+
+**Expected output (already exists):**
+
+```
+[INFO] Admin ya existe
+```
+
+<Warning>
+  The `.env.example` file sets `ADMIN_PASS=admin123456`. Change this to a strong, unique password before any production or public deployment.
+</Warning>
+
+---
+
+## `create-user`
+
+Creates a single regular (non-admin) user account from environment variables. Like `create-admin`, it is idempotent — if the username already exists, it prints an info message and exits cleanly.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `USER_NAME` | `user` | Username for the regular account (stored lowercase) |
+| `USER_PASS` | `user123` | Plain-text password; hashed before storage |
+| `USER_FULLNAME` | `Usuario` | Full display name stored in `nombre` |
+| `USER_AGE` | `20` | Integer age stored in `edad` |
+
+```bash
+flask --app app.py create-user
+```
+
+**Expected output (new account):**
+
+```
+[OK] Usuario creado: user / user123
+```
+
+**Expected output (already exists):**
+
+```
+[INFO] Usuario ya existe
+```
+
+---
+
+## `seed`
+
+Inserts a single sample species record to verify that the catalog and RAG pipeline are working end-to-end. The seeded species is **Cóndor Andino** (*Vultur gryphus*), with `id: condor-001` and `qr_id: condor-001`. After inserting the record, the command attempts to reindex it into ChromaDB. If ChromaDB is unavailable, the reindex failure is silently ignored and the DB record is still saved.
+
+The command is idempotent: if `condor-001` already exists in the database, it prints an info message and makes no changes.
+
+```bash
+flask --app app.py seed
+```
+
+**Expected output:**
+
+```
+[OK] Seed aplicado
+```
+
+**Expected output (already seeded):**
+
+```
+[INFO] Seed ya aplicado
+```
+
+<Tip>
+  After running `seed`, visit `/scan/condor-001` or navigate to `/especie/condor-001` to confirm the species detail page renders correctly with the AI chat guide.
+</Tip>
+
+---
+
+## `reindex-all`
+
+Iterates over every species in the database in alphabetical order by `nombre_comun` and reindexes each one into ChromaDB using `VectorStore.reindex_species()`. At the end of the run, it prints the count of successfully reindexed species and lists any that failed with their error messages.
+
+**When to use:** After restoring a database backup when the Chroma vector store is empty or out of sync, after bulk-importing species records directly into SQLite, or after a Chroma data loss event.
+
+```bash
+flask --app app.py reindex-all
+```
+
+**Expected output (all successful):**
+
+```
+[OK] Reindexadas 42/42 especies
+```
+
+**Expected output (with failures):**
+
+```
+[OK] Reindexadas 40/42 especies
+[WARNING] Fallaron estas especies:
+ - condor-002: connection refused
+ - jaguar-001: embedding model not loaded
+```
+
+<Warning>
+  `reindex-all` requires the Ollama embedding service (`OLLAMA_EMBED_URL`) to be reachable. Run it only after confirming the embedding model (`OLLAMA_EMBED_MODEL`, default `nomic-embed-text`) is loaded and responding.
+</Warning>
+
+---
+
+## `seed-demo-data`
+
+Generates a realistic dataset for demonstrating the scan metrics dashboard and audit log. The command creates approximately 1,500 `ScanEvent` records spread over 90 days (with realistic hourly and weekend distributions), plus multiple `SpeciesAuditLog` entries per species covering created, viewed_admin, updated (with per-field before/after values), and deleted actions.
+
+**Prerequisites:** At least one species and at least one user must exist before running this command. Run `seed`, `create-admin`, and `create-user` first.
+
+```bash
+flask --app app.py seed-demo-data
+```
+
+**Expected output:**
+
+```
+[OK] Eventos de escaneo totales: 1523
+[OK] Registros de auditoria totales: 847
+[OK] Datos de demostracion completados
+```
+
+<Warning>
+  `seed-demo-data` is intended for development and demonstration environments only. Running it multiple times adds more records on each invocation — it is **not** idempotent. Do not run it against a production database with real visitor data.
+</Warning>
+
+---
+
+## Server Run Modes
+
+In addition to the CLI maintenance commands, BioScan Museo can be started in three ways depending on your environment.
+
+### Flask Development Server
+
+Uses the built-in Werkzeug reloader with debug mode enabled. Suitable for local development — not for production.
+
+```bash
+flask --app app.py run --debug --port 5000
+```
+
+### Direct Python Entrypoint
+
+Runs the same Flask application using `app.run()` from the `if __name__ == "__main__"` block. This mode starts on port **5002** with debug mode enabled.
+
+```bash
+python app.py
+```
+
+### TTS Sidecar Service
+
+The Text-to-Speech service is a separate FastAPI application. Start it with Uvicorn on port **8010**:
+
+```bash
+uvicorn Servertts.app.main:app --reload --host 0.0.0.0 --port 8010
+```
+
+<Note>
+  The TTS service requires `MUSEO_TTS_SHARED_KEY` and `TTS_API_KEY` to be set in `.env`. The main Flask app communicates with the TTS service using the internal base URL configured in `MUSEO_TTS_INTERNAL_BASE_URL`.
+</Note>
+
+---
+
+## Typical First-Run Setup
+
+Use the following sequence to bring up a fresh BioScan Museo instance from scratch.
+
+<Steps>
+  <Step title="Copy environment file">
+    Copy `.env.example` to `.env` and update `SECRET_KEY`, `ADMIN_PASS`, `MUSEO_TTS_SHARED_KEY`, and any Ollama connection values for your environment.
+
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  <Step title="Initialize the database">
+    Create all tables and apply schema migrations. This is always safe to run first.
+
+    ```bash
+    flask --app app.py init-db
+    ```
+  </Step>
+  <Step title="Create the admin account">
+    The username and password are read from `ADMIN_USER` and `ADMIN_PASS` in your `.env` file.
+
+    ```bash
+    flask --app app.py create-admin
+    ```
+  </Step>
+  <Step title="Create a regular user (optional)">
+    Useful for testing visitor flows without using the admin account.
+
+    ```bash
+    flask --app app.py create-user
+    ```
+  </Step>
+  <Step title="Seed sample data">
+    Inserts the Cóndor Andino species so you have at least one scannable record immediately.
+
+    ```bash
+    flask --app app.py seed
+    ```
+  </Step>
+  <Step title="Start the development server">
+    Launch the Flask development server and open `http://localhost:5000` in your browser.
+
+    ```bash
+    flask --app app.py run --debug --port 5000
+    ```
+  </Step>
+  <Step title="Load demo metrics (optional)">
+    If you want to explore the metrics dashboard and audit log with realistic data, run the demo seeder. Make sure Ollama is running if you also want the chat guide to work.
+
+    ```bash
+    flask --app app.py seed-demo-data
+    ```
+  </Step>
+</Steps>

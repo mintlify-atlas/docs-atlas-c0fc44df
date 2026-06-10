@@ -1,0 +1,109 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "BioScan Museo",
+  "projectDescription": "A Flask + FastAPI web platform that serves as an AI-powered guide for a museum's Birds Hall, combining QR code scanning, RAG-enhanced chatbot conversations, and text-to-speech narration to give visitors interactive species information.",
+  "theme": "palm",
+  "primaryColor": "#059669",
+  "lightColor": "#d1fae5",
+  "darkColor": "#064e3b",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "deployment"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment",
+              "configuration/llm",
+              "configuration/tts"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "guides/species-management",
+              "guides/qr-codes",
+              "guides/rag-chatbot",
+              "guides/scan-metrics"
+            ]
+          },
+          {
+            "group": "Administration",
+            "pages": [
+              "admin/overview",
+              "admin/cli-commands",
+              "admin/audit-log"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Flask App API",
+            "pages": [
+              "api/chat",
+              "api/species",
+              "api/metrics",
+              "api/public"
+            ]
+          },
+          {
+            "group": "TTS Service API",
+            "pages": [
+              "api/tts-overview",
+              "api/tts-endpoints",
+              "api/tts-websocket"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "QR code scanning to identify and display bird species information",
+    "RAG-powered chatbot using Ollama LLM + ChromaDB vector store for context-aware answers",
+    "Text-to-speech narration via Microsoft Edge TTS (es-CO-GonzaloNeural voice by default)",
+    "Admin CRUD panel for species, museum documents, and QR style customization",
+    "Scan metrics dashboard with daily/origin charts and species ranking",
+    "Species comparison with LLM-generated analysis for taxonomically related birds",
+    "Per-user visit tracking and personalized tour memory in chat context",
+    "Docker Compose stack with ngrok tunnels for public HTTPS access on low-power hardware (Orange Pi 4 Pro)",
+    "Customizable QR code styles (frames, colors, module shapes)",
+    "Species audit log tracking all admin create/update/delete/view actions"
+  ],
+  "publicApiSurface": [
+    "POST /api/chat — non-streaming RAG chat (anonymous or authenticated)",
+    "POST /api/chat_stream — streaming RAG chat (authenticated users)",
+    "GET /api/especies/comparar/analysis — LLM-powered species comparison JSON",
+    "GET /api/admin/metricas — scan metrics JSON (admin only)",
+    "GET /api/admin/especies/auditoria — species audit log JSON (admin only)",
+    "GET /scan/<qr_id> — QR scan entry point, records scan event, redirects to species page",
+    "GET /especie/<qr_id> — public species detail page",
+    "GET /especies — public species listing with search",
+    "GET /especies/comparar — species comparison page",
+    "POST /internal/species/sync — TTS service: pre-generate audio for a species (shared key required)",
+    "POST /internal/species/delete — TTS service: remove audio cache for a species (shared key required)",
+    "GET /tts/by-qr/{qr_id} — TTS service: serve pre-generated MP3 by QR ID (API key required)",
+    "POST /qr/resolve-frame — TTS service: detect QR from JPEG frame and return audio info (API key required)",
+    "POST /tts/from-text — TTS service: generate ad-hoc MP3 from arbitrary text (API key required)",
+    "POST /tts/from-frame — TTS service: detect QR from JPEG and stream matching pre-generated audio (API key required)",
+    "WS /ws/qr-stream — TTS service: WebSocket stream for real-time QR detection and text delivery",
+    "GET /health — TTS service health check",
+    "flask init-db — initialize SQLite database",
+    "flask create-admin — create admin user from env vars",
+    "flask create-user — create regular user from env vars",
+    "flask seed — insert Cóndor Andino sample species",
+    "flask reindex-all — reindex all species into ChromaDB vector store"
+  ]
+}
