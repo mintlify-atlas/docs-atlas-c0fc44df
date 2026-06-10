@@ -1,7 +1,7 @@
 ---
-title: "Admin Metrics and Audit Log API Endpoints"
+title: "BioScan Museo Admin: Scan Metrics and Audit Log Endpoints"
 sidebarTitle: "Metrics"
-description: "Admin-only JSON endpoints for scan metrics and species change history. Supports date range, species, origin, and action filters. Requires is_admin=true."
+description: "Admin-only JSON endpoints for scan metrics and species audit history. Filter by date range, species, scan origin, or action type. Requires admin."
 ---
 
 BioScan Museo records two distinct activity streams: raw scan events (every time a visitor scans or views a species) and species audit log entries (every admin action such as creating, editing, or deleting a species). Both streams are exposed as filterable JSON endpoints for dashboards, exports, and automated reporting. Both endpoints share their logic with the corresponding HTML admin pages, so any filter accepted by the UI is equally valid here.

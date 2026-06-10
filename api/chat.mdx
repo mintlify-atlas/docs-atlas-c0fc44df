@@ -1,7 +1,7 @@
 ---
-title: "Chat API: RAG-Powered Museum Guide Endpoints"
+title: "BioScan Museo: RAG-Powered Chat Endpoints for Species"
 sidebarTitle: "Chat"
-description: "Ask the RAG-powered museum guide about any species via POST /api/chat (JSON) or POST /api/chat_stream (streaming). Login optional for the basic endpoint."
+description: "Send questions to the RAG museum guide via POST /api/chat (anonymous JSON) or POST /api/chat_stream (authenticated streaming with tour memory)."
 ---
 
 BioScan Museo exposes two chat endpoints that let visitors ask natural-language questions about any species in the collection. Both endpoints combine a structured species fact-sheet from the database, a vector-search pass over museum documents (ChromaDB), and an Ollama-powered LLM. The non-streaming `/api/chat` endpoint is stateless and requires no login; the streaming `/api/chat_stream` endpoint is session-aware, personalises answers with the visitor's tour history, and persists each exchange as a `ChatTurn` record. A third endpoint, `/api/especies/comparar/analysis`, generates a side-by-side taxonomic analysis for any two related species.

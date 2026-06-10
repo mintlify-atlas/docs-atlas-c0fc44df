@@ -46,6 +46,7 @@ Any value outside these three is normalized back to `qr`. You can pass the origi
 | `POST` | `/admin/qr/<id>/personalizar/reset` | Reset the QR style back to defaults. |
 | `GET` | `/admin/qr/<id>/imagen.png` | Render and return the QR image as PNG. |
 | `GET` | `/admin/qr/<id>/imagen.jpg` | Render and return the QR image as JPEG. |
+| `GET` | `/admin/qr/<id>/imagen.jpeg` | Render and return the QR image as JPEG (alias for `.jpg`). |
 
 ## QR style options
 
@@ -129,11 +130,12 @@ Resetting a QR style (via `POST /admin/qr/<id>/personalizar/reset`) deletes the 
 
 ## Downloading QR images
 
-The image endpoint renders the QR on demand using Pillow. Both PNG and JPEG are supported.
+The image endpoint renders the QR on demand using Pillow. PNG and JPEG are supported. The format is selected by the file extension in the URL path; `.jpg` and `.jpeg` are equivalent.
 
 ```
 GET /admin/qr/<species_id>/imagen.png
 GET /admin/qr/<species_id>/imagen.jpg
+GET /admin/qr/<species_id>/imagen.jpeg
 ```
 
 Add `?download=1` to the URL to receive a `Content-Disposition: attachment` header, which causes the browser to save the file rather than display it:

@@ -1,7 +1,7 @@
 ---
-title: "Manage Bird Species in the BioScan Museo Admin Panel"
+title: "Manage Species in the BioScan Museo Admin Panel"
 sidebarTitle: "Species Management"
-description: "Add, edit, and delete bird species in BioScan Museo. Upload images, audio, and museum documents that power the RAG chatbot and TTS narration."
+description: "Add, edit, and delete species in BioScan Museo. Upload images, audio, and museum documents that power the RAG chatbot and TTS narration."
 ---
 
 The species catalog is the foundation of BioScan Museo. Every exhibit, QR code, chatbot response, and TTS narration is built from the data stored in each species record. Admins can create and update species entries through the admin panel, upload supporting media and museum documents, and trigger automatic re-indexing into the RAG vector store.
@@ -26,10 +26,13 @@ Each species record maps directly to the `Species` database model. The table bel
 | `imagen` | `String(300)` | Relative path to the uploaded cover image (set automatically on upload). |
 | `audio` | `String(300)` | Relative path to the uploaded MP3 narration file (set automatically on upload). |
 | `museo_info` | `Text` | Free-form curatorial notes specific to the museum exhibit. This text is indexed into ChromaDB and used as a primary RAG source. |
-| `curiosidades` | `JSON array` | List of short curiosity strings stored as JSON. Enter one curiosity per line in the admin form. |
+| `curiosidades_json` | `Text` | Curiosity strings serialized as a JSON array. Exposed as the `curiosidades` Python property, which returns a list. Enter one curiosity per line in the admin form. |
 | `thumb_pos_x` | `Integer` | Horizontal focal point for the thumbnail image (0–100, default `50`). |
 | `thumb_pos_y` | `Integer` | Vertical focal point for the thumbnail image (0–100, default `50`). |
 | `thumb_zoom` | `Integer` | Zoom percentage for the thumbnail image (80–200, default `100`). |
+| `created_at` | `DateTime` | UTC timestamp when the record was first created. Set automatically. |
+| `updated_at` | `DateTime` | UTC timestamp of the most recent edit. Updated automatically on every save. |
+| `updated_by_id` | `Integer` | Foreign key to the `User` who last modified the record. `NULL` if not set. |
 
 ## Admin routes
 
@@ -42,7 +45,7 @@ Each species record maps directly to the `Species` database model. The table bel
 | `POST` | `/admin/especies/<id>/editar` | Submit the edit form. |
 | `POST` | `/admin/especies/<id>/eliminar` | Delete a species and all its associated documents. |
 
-All admin routes require an authenticated user with `is_admin = True`.
+All admin routes require an authenticated user with `is_admin = True`. The species list is paginated at **10 records per page**; use the `page` query parameter to navigate between pages.
 
 ## Adding a new species
 

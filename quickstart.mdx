@@ -1,7 +1,7 @@
 ---
-title: "Get Started with BioScan Museo in 5 Minutes"
+title: "Get Started with BioScan Museo Using Docker Compose"
 sidebarTitle: "Quickstart"
-description: "Run BioScan Museo locally with Docker Compose, create your first species, and scan a QR code — all in under five minutes."
+description: "Run BioScan Museo locally with Docker Compose, initialise the database, create your first species, and verify QR scanning end-to-end."
 ---
 
 This guide walks you through cloning BioScan Museo, configuring the minimum required environment variables, starting all five Docker services, and verifying that both the Flask web app and the TTS sidecar are healthy. By the end you will be logged into the admin panel and looking at the seeded Cóndor Andino species card — ready to scan a QR and start chatting.
@@ -101,6 +101,9 @@ Before you start, make sure the following are available on your machine:
     # Seed the Cóndor Andino sample species (condor-001)
     docker compose exec museo-app flask --app app.py seed
 
+    # Create an additional non-admin user (reads USER_NAME / USER_PASS from .env)
+    docker compose exec museo-app flask --app app.py create-user
+
     # Re-embed all species documents into ChromaDB
     docker compose exec museo-app flask --app app.py reindex-all
     ```
@@ -109,19 +112,19 @@ Before you start, make sure the following are available on your machine:
   <Step title="Open the app and verify the sample species">
     Navigate to the Flask app in your browser:
 
-    ```
+    ```text
     http://localhost:5000
     ```
 
     Log in with the credentials you set in `.env` (`ADMIN_USER` / `ADMIN_PASS`). Then go to the admin species list:
 
-    ```
+    ```text
     http://localhost:5000/admin/especies
     ```
 
     You should see the seeded **Cóndor Andino** (*Vultur gryphus*, QR ID: `condor-001`). Click it to view the full species detail page at:
 
-    ```
+    ```text
     http://localhost:5000/especie/condor-001
     ```
 
@@ -133,6 +136,10 @@ Before you start, make sure the following are available on your machine:
     | TTS sidecar (FastAPI) | `http://localhost:8010` |
     | ngrok inspector (Flask tunnel) | `http://localhost:4040` |
     | ngrok-tts inspector (TTS tunnel) | `http://localhost:4041` |
+
+    <Note>
+      When running Flask directly without Docker (for example, during local development), use `flask --app app.py run --debug --port 5000` to stay on port 5000. If you start the app via `python app.py` instead, it binds to **port 5002** — see `if __name__ == "__main__": app.run(host="0.0.0.0", port=5002, debug=True)` at the bottom of `app.py`.
+    </Note>
   </Step>
 
   <Step title="Verify the TTS sidecar health">

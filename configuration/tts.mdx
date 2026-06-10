@@ -1,7 +1,7 @@
 ---
-title: "Configure the BioScan TTS Voice Service"
+title: "Configure the BioScan Museo TTS Voice Service Settings"
 sidebarTitle: "TTS Settings"
-description: "Configure BioScan Museo's Edge TTS sidecar: select voice, speech rate, volume, audio cache directory, and integrate it with the Flask app via shared keys."
+description: "Configure BioScan Museo's Edge TTS sidecar: select voice, speech rate, volume, audio cache path, and connect it to the Flask app via shared keys."
 ---
 
 BioScan Museo includes a standalone FastAPI voice service — the TTS sidecar — that pre-generates MP3 narrations for every species in the museum catalog. When an admin saves or updates a species, the Flask application calls the sidecar's internal sync endpoint to regenerate all narration styles. Physical devices such as ESP32 scanners then fetch the pre-built audio directly via the sidecar's public URL.
@@ -67,7 +67,7 @@ These variables wire the TTS sidecar into the main BioScan Museo application.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `MUSEO_API_BASE_URL` | string | `http://127.0.0.1:5000` | Base URL of the main Flask application, as seen from the TTS sidecar. Used in the TTS service when it needs to call back to the Flask API. |
+| `MUSEO_API_BASE_URL` | string | _(empty)_ | Base URL of the main Flask application, as seen from the TTS sidecar. Used in the TTS service when it needs to call back to the Flask API. Must be set explicitly — for Docker Compose deployments, typically `http://app:5000`. |
 | `MUSEO_API_KEY` | string | — | Shared secret the TTS sidecar uses to authenticate requests arriving from the Flask app. **Must equal `MUSEO_TTS_SHARED_KEY` in the main `.env`.** The Flask app sends this value in the `X-API-Key` header on every `/internal/species/sync` and `/internal/species/delete` call. |
 | `MUSEO_TTS_PUBLIC_BASE_URL` | string | — | The public HTTPS URL of this TTS service. Also set in the main Flask `.env` so the app knows the public address of the sidecar. In ngrok deployments, this is the ngrok-tts tunnel URL. |
 | `TTS_API_KEY` | string | — | Key required by external callers — such as ESP32 devices — to access the `/tts/by-qr/`, `/tts/from-frame/`, and `/qr/resolve-frame/` endpoints. Also required as the `key` query parameter on WebSocket connections to `/ws/qr-stream`. |

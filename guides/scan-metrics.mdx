@@ -21,6 +21,15 @@ BioScan Museo records a `ScanEvent` every time a visitor interacts with a specie
 | `origin` | `String(20)` | How the scan was initiated: `qr`, `web`, or `manual`. Indexed. |
 | `scanned_at` | `DateTime` | UTC timestamp of the scan event. Indexed. |
 
+The following database indexes are created on `scan_event` to keep filter queries fast:
+
+| Index name | Column |
+|---|---|
+| `idx_scan_species` | `species_id` |
+| `idx_scan_user` | `user_id` |
+| `idx_scan_time` | `scanned_at` |
+| `idx_scan_origin` | `origin` |
+
 ### Visit
 
 `Visit` tracks whether an authenticated user has visited a specific species at least once. It is used for the "tour completion" celebration and for personalizing the RAG chatbot context.

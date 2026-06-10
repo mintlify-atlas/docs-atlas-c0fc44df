@@ -1,5 +1,5 @@
 ---
-title: "TTS WebSocket API: Real-Time QR Detection Stream"
+title: "BioScan Museo TTS WebSocket API: QR Detection Stream"
 sidebarTitle: "WebSocket"
 description: "Stream JPEG frames over WebSocket to BioScan Museo's /ws/qr-stream endpoint; receive species text and audio metadata the moment a QR code is detected."
 ---
@@ -220,4 +220,4 @@ function streamFrames() {
 | `1011` | `error` | `"species_audio_not_found"` | QR detected but not in `_qr_index.json` |
 | `1011` | `error` | `"species_meta_not_found"` | Index entry exists but `meta.json` is missing |
 | `1011` | `error` | exception message | Unexpected server-side error during frame processing |
-| `1000` | _(no message)_ | — | Client disconnected cleanly before a QR was found |
+| `1000` | _(no message after `qr_found`)_ | — | Server closes cleanly after the first successful QR detection |

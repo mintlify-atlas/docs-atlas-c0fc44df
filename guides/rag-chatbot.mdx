@@ -51,9 +51,9 @@ Before building the LLM prompt, `classify_question_scope()` in `rag.py` classifi
 
 The two keyword sets used for matching are:
 
-**Specimen terms** (`SPECIMEN_QUESTION_TERMS`): `este espécimen`, `este ejemplar`, `ejemplar`, `pieza`, `pieza expuesta`, `pieza exhibida`, `expuesto`, `exhibido`, `museo`, `vitrina`, `colección`, `sala`, `procedencia`, `origen`, `de dónde viene`, `donde fue encontrado`, `hallado`, `recolectado`, `colectado`, `capturado`, `donado`, `ingresó al museo`, `registro`, `inventario`, `catalogado`, `localidad`, `sitio`
+**Specimen terms** (`SPECIMEN_QUESTION_TERMS`): `este espécimen`, `este especimen`, `este ejemplar`, `ejemplar`, `espécimen`, `especimen`, `pieza`, `pieza expuesta`, `pieza exhibida`, `expuesto`, `exhibido`, `museo`, `vitrina`, `colección`, `coleccion`, `sala`, `procedencia`, `origen`, `de dónde viene`, `de donde viene`, `dónde fue encontrado`, `donde fue encontrado`, `fue encontrado`, `hallado`, `hallada`, `hallaron`, `recolectado`, `recolectada`, `colectado`, `colectada`, `capturado`, `capturada`, `donado`, `donada`, `ingresó al museo`, `ingreso al museo`, `registro`, `inventario`, `catalogado`, `catalogada`, `localidad`, `sitio`
 
-**General terms** (`GENERAL_QUESTION_TERMS`): `hábitat`, `habitat`, `dieta`, `qué come`, `come`, `distribución`, `dónde vive`, `vive`, `familia`, `orden`, `reproducción`, `longevidad`, `mide`, `peso`, `envergadura`, `características`, `ecología`, `comportamiento`, `estado de conservación`, `amenazas`, `curiosidades`
+**General terms** (`GENERAL_QUESTION_TERMS`): `hábitat`, `habitat`, `dieta`, `qué come`, `que come`, `come`, `distribución`, `distribucion`, `dónde vive`, `donde vive`, `vive`, `familia`, `orden`, `reproducción`, `reproduccion`, `longevidad`, `mide`, `peso`, `envergadura`, `características`, `caracteristicas`, `ecología`, `ecologia`, `comportamiento`, `estado de conservación`, `estado de conservacion`, `amenazas`, `curiosidades`
 
 The scope is passed through the entire pipeline and influences both the structured context content and the ChromaDB retrieval scoring.
 

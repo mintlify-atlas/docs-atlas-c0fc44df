@@ -43,7 +43,7 @@ Setting `OLLAMA_PROVIDER=local` or `OLLAMA_PROVIDER=cloud` bypasses the name che
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `OLLAMA_CHAT_MODEL` | string | `llama3.1:8b` | The primary model used for all species chat and comparison requests. |
+| `OLLAMA_CHAT_MODEL` | string | `gpt-oss:20b-cloud` | The primary model used for all species chat and comparison requests. The `.env.example` ships with `gpt-oss:20b-cloud`; the code falls back to `llama3.1:8b` only when the variable is unset entirely. |
 | `OLLAMA_CHAT_URL` | string | `http://ollama:11434/api/chat` | Direct URL for the `/api/chat` endpoint. The `LLMClient` constructs this from `OLLAMA_LOCAL_BASE_URL` or `OLLAMA_CLOUD_BASE_URL` at runtime; you only need to set this explicitly for non-standard deployments. |
 
 ---

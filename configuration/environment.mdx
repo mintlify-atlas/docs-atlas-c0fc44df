@@ -1,7 +1,7 @@
 ---
-title: "Environment Variables Reference for BioScan Museo"
+title: "Environment Variables – BioScan Museo Configuration"
 sidebarTitle: "Environment"
-description: "Complete reference for all BioScan Museo environment variables: app secrets, database, admin credentials, Gunicorn tuning, and ngrok tokens."
+description: "Complete reference for all BioScan Museo environment variables: Flask secrets, database, admin setup, Gunicorn workers, and ngrok tunnel tokens."
 ---
 
 BioScan Museo is configured entirely through environment variables, keeping secrets out of source code and making deployments portable across development, staging, and production environments. All variables are loaded at startup via `python-dotenv` — the Flask app calls `load_dotenv()` before any configuration is read, and the TTS sidecar does the same from its own `.env` file inside the `Servertts/` directory.
